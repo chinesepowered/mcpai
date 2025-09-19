@@ -23,7 +23,8 @@ from services.apify_service import ApifyService
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    # Use DEBUG level so backend emits detailed logs (e.g., raw MiniMax API responses)
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -110,22 +111,11 @@ async def generic_exception_handler(request: Request, exc: Exception):
 # Health check endpoint
 @app.get("/api/health")
 async def health_check():
-    health_status = {
-        "status": "ok", 
-        "message": "API is running",
-        "services": {
-            "brightdata": "initialized" if brightdata_service else "not_initialized",
-            "minimax": "initialized" if minimax_service else "not_initialized",
-            "apify": "initialized" if apify_service else "not_initialized"
-        }
-    }
-    
-    # Add error information if any services failed to initialize
-    if service_errors:
-        health_status["service_errors"] = service_errors
-        health_status["status"] = "degraded"
-    
-    return health_status
+    """
+    Simple health-check endpoint used by the frontend to verify the API
+    is alive.  No dependency on MCP services.
+    """
+    return {"status": "ok"}
 
 # Service dependencies - these now just return the already initialized services
 async def get_brightdata_service() -> BrightDataService:
@@ -273,41 +263,7 @@ async def get_video(
             detail=f"Error getting video: {str(e)}",
         )
 
-# MCP status endpoint
-@app.get("/api/mcp-status")
-async def get_mcp_status():
-    """
-    Get status of MCP servers
-    """
-    status_info = {
-        "brightdata": {
-            "initialized": brightdata_service is not None,
-            "error": service_errors.get("brightdata")
-        },
-        "minimax": {
-            "initialized": minimax_service is not None,
-            "error": service_errors.get("minimax")
-        }
-    }
-    
-    # Check if MCPs are running
-    if brightdata_service:
-        try:
-            is_running = await brightdata_service.ensure_mcp_running()
-            status_info["brightdata"]["running"] = is_running
-        except Exception as e:
-            status_info["brightdata"]["running"] = False
-            status_info["brightdata"]["error"] = str(e)
-    
-    if minimax_service:
-        try:
-            is_running = await minimax_service.ensure_mcp_running()
-            status_info["minimax"]["running"] = is_running
-        except Exception as e:
-            status_info["minimax"]["running"] = False
-            status_info["minimax"]["error"] = str(e)
-    
-    return status_info
+
 
 # Initialize services function
 async def initialize_services():
@@ -350,12 +306,9 @@ async def initialize_services():
         
         services_initialized = True
     
-    # Start MCP processes in background tasks to avoid blocking startup
+    # Start Bright Data MCP in a background task to avoid blocking startup
     if brightdata_service:
         asyncio.create_task(start_brightdata_mcp())
-    
-    if minimax_service:
-        asyncio.create_task(start_minimax_mcp())
 
 async def start_brightdata_mcp():
     """Start Bright Data MCP in a background task"""
@@ -369,19 +322,6 @@ async def start_brightdata_mcp():
     except Exception as e:
         service_errors["brightdata"] = str(e)
         logger.error(f"Error starting Bright Data MCP: {str(e)}", exc_info=True)
-
-async def start_minimax_mcp():
-    """Start MiniMax MCP in a background task"""
-    global service_errors
-    try:
-        logger.info("Starting MiniMax MCP")
-        success = await minimax_service.ensure_mcp_running()
-        if not success:
-            service_errors["minimax"] = "Failed to start MiniMax MCP"
-            logger.error("Failed to start MiniMax MCP")
-    except Exception as e:
-        service_errors["minimax"] = str(e)
-        logger.error(f"Error starting MiniMax MCP: {str(e)}", exc_info=True)
 
 # Application startup event
 @app.on_event("startup")

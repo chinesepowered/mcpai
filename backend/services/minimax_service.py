@@ -167,10 +167,24 @@ class MiniMaxService:
                 
                 # Parse the response
                 result_data = response.json()
+                # Log full response for debugging – helps diagnose missing task_id issues
+                logger.debug(
+                    "MiniMax video_generation raw response: %s",
+                    json.dumps(result_data, ensure_ascii=False),
+                )
                 
                 # Extract task ID from response
                 task_id = result_data.get("task_id")
                 if not task_id:
+                    # If base_resp is present, include status code/msg for easier debugging
+                    base_resp = result_data.get("base_resp", {})
+                    status_code = base_resp.get("status_code")
+                    status_msg = base_resp.get("status_msg")
+                    logger.error(
+                        "MiniMax API returned no task_id. status_code=%s, status_msg=%s",
+                        status_code,
+                        status_msg,
+                    )
                     raise ValueError("No task_id in API response")
                 
                 # Create initial response
