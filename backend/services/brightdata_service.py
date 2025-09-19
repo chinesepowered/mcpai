@@ -320,8 +320,24 @@ class BrightDataService:
                     )
                 )
                 
-                # Parse the result
+                # Parse the initial result
                 result_data = json.loads(tool_result.result)
+
+                # Check if this is an async job that needs polling
+                if 'job_id' in result_data:
+                    logger.info(f"Instagram scraping started with job ID: {result_data['job_id']}")
+                    # Poll for results
+                    result_data = await self._poll_scraping_results(result_data['job_id'])
+                elif 'status' in result_data and result_data['status'] == 'pending':
+                    # Alternative async pattern - poll with status checks
+                    job_id = result_data.get('id') or result_data.get('request_id')
+                    if job_id:
+                        logger.info(f"Polling for scraping results with ID: {job_id}")
+                        result_data = await self._poll_scraping_results(job_id)
+                    else:
+                        # Wait a bit and retry the same request
+                        await asyncio.sleep(5)
+                        continue
                 
                 # Transform to InstagramPost models
                 posts = self._transform_instagram_data(result_data, username, limit)
@@ -344,6 +360,85 @@ class BrightDataService:
                     continue
                 
                 raise RuntimeError(f"Error scraping Instagram: {str(e)}")
+    
+    async def _poll_scraping_results(self, job_id: str) -> Dict[str, Any]:
+        """
+        Poll for the results of an asynchronous scraping job.
+        
+        Args:
+            job_id: The job ID to poll for
+            
+        Returns:
+            Dict[str, Any]: The result data when available
+            
+        Raises:
+            RuntimeError: If polling times out or fails
+        """
+        logger.info(f"Polling for results of job {job_id}")
+        
+        # Configure polling parameters
+        max_polls = 30  # Maximum number of polling attempts
+        poll_interval = 3  # Initial interval between polls in seconds
+        max_poll_interval = 15  # Maximum interval between polls
+        
+        # Poll for results
+        for i in range(max_polls):
+            try:
+                # Exponential backoff for polling interval
+                current_interval = min(poll_interval * (1.5 ** i), max_poll_interval)
+                
+                # Check job status
+                tool_result = await self.mcp_session.call_tool(
+                    mcp.CallToolRequest(
+                        name="job_status",
+                        arguments={"job_id": job_id}
+                    )
+                )
+                
+                # Parse result
+                status_data = json.loads(tool_result.result)
+                
+                # Check if job is completed
+                if status_data.get("status") == "completed":
+                    logger.info(f"Job {job_id} completed successfully")
+                    
+                    # Get the result data
+                    if "result" in status_data:
+                        return status_data["result"]
+                    elif "data" in status_data:
+                        return status_data["data"]
+                    else:
+                        # If no result data in status, try to get results explicitly
+                        result_tool = await self.mcp_session.call_tool(
+                            mcp.CallToolRequest(
+                                name="job_result",
+                                arguments={"job_id": job_id}
+                            )
+                        )
+                        return json.loads(result_tool.result)
+                
+                # Check if job failed
+                elif status_data.get("status") == "failed":
+                    error_msg = status_data.get("error", "Unknown error")
+                    logger.error(f"Job {job_id} failed: {error_msg}")
+                    raise RuntimeError(f"Scraping job failed: {error_msg}")
+                
+                # Job still in progress, wait and try again
+                logger.debug(f"Job {job_id} still in progress (attempt {i+1}/{max_polls}), waiting {current_interval}s...")
+                await asyncio.sleep(current_interval)
+                
+            except Exception as e:
+                if i < max_polls - 1:
+                    logger.warning(f"Error polling job {job_id} (attempt {i+1}/{max_polls}): {str(e)}")
+                    await asyncio.sleep(poll_interval)
+                    continue
+                else:
+                    logger.error(f"Failed to poll job {job_id} after {max_polls} attempts: {str(e)}")
+                    raise RuntimeError(f"Polling for scraping results failed: {str(e)}")
+        
+        # If we get here, polling timed out
+        logger.error(f"Timed out waiting for job {job_id} to complete after {max_polls} polling attempts")
+        raise RuntimeError(f"Timed out waiting for scraping results (job ID: {job_id})")
     
     def _transform_instagram_data(
         self, 

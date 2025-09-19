@@ -16,6 +16,7 @@ import Dashboard from './pages/Dashboard';
 import ContentDiscovery from './pages/ContentDiscovery';
 import VideoGeneration from './pages/VideoGeneration';
 import VideoPreview from './pages/VideoPreview';
+import DemoVideos from './pages/DemoVideos';
 
 // Create React Query client
 const queryClient = new QueryClient({
@@ -50,6 +51,10 @@ const router = createBrowserRouter([
       {
         path: 'preview/:videoId',
         element: <VideoPreview />,
+      },
+      {
+        path: 'demo',
+        element: <DemoVideos />,
       },
     ],
   },

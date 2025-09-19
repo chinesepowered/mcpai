@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { ErrorBoundary } from 'react-error-boundary';
-import { FiVideo, FiSearch, FiHome, FiMoon, FiSun, FiGithub } from 'react-icons/fi';
+import { FiVideo, FiSearch, FiHome, FiMoon, FiSun, FiGithub, FiZap } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import { apiService } from './services/api';
 
@@ -232,6 +232,7 @@ const App: React.FC = () => {
                 <div className="space-y-2">
                   <NavItem to="/" icon={<FiHome size={18} />} label="Dashboard" />
                   <NavItem to="/discover" icon={<FiSearch size={18} />} label="Discover Content" />
+                  <NavItem to="/demo" icon={<FiZap size={18} />} label="Demo Videos" />
                 </div>
               </nav>
               
@@ -256,6 +257,16 @@ const App: React.FC = () => {
                   >
                     <FiSearch size={20} />
                     <span className="text-xs mt-1">Discover</span>
+                  </NavLink>
+                  
+                  <NavLink
+                    to="/demo"
+                    className={({ isActive }) => 
+                      `flex flex-col items-center py-3 px-6 ${isActive ? 'text-brand' : 'text-gray-600 dark:text-gray-400'}`
+                    }
+                  >
+                    <FiZap size={20} />
+                    <span className="text-xs mt-1">Demo</span>
                   </NavLink>
                 </div>
               </div>
