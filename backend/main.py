@@ -10,8 +10,14 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 # Import service classes
+# NOTE: FastAPI runs this file from the *backend* package, so
+# relative imports (`services.*`) resolve regardless of the project root.
 from services.brightdata_service import BrightDataService, InstagramPost
-from services.minimax_service import MiniMaxService, VideoGenerationRequest as MCPVideoRequest, VideoStatus
+from services.minimax_service import (
+    MiniMaxService,
+    VideoGenerationRequest as MCPVideoRequest,
+    VideoStatus,
+)
 from services.apify_service import ApifyService
 
 # Configure logging

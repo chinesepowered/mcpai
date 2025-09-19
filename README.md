@@ -8,8 +8,10 @@ AI-powered system that discovers trending Instagram content and instantly genera
 - **AI Video Generation** – MiniMax MCP turns the selected idea into an auto-edited video (script, voice, visuals).
 - **Download & Share** – Preview the result in-browser and export for rapid social distribution.
 
-## 🛠️ Tech Stack
-| Layer        | Technology |
+# run FastAPI server **from the backend directory**
+cd backend
+source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+uvicorn main:app --reload
 |--------------|------------|
 | Backend      | Python 3.11 (FastAPI) |
 | Frontend     | React 18 + Vite |
@@ -93,6 +95,24 @@ black .
 # run unit tests
 pytest
 ```
+
+## 🛠️ Troubleshooting
+
+### `ModuleNotFoundError: No module named 'services'`
+If you see this error when starting the backend it usually means the server is being
+launched **from the project root** rather than inside the `backend` package.
+
+Run the server like so:
+
+```bash
+cd backend
+source .venv/bin/activate
+uvicorn main:app --reload
+```
+
+`main.py` uses relative imports (`from services import …`) that expect the working
+directory to be `backend/`. Running from within that folder (or using
+`python -m backend.main`) ensures the imports resolve correctly.
 
 ## 📄 License
 MIT
