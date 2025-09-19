@@ -1,7 +1,6 @@
 import os
 import logging
 import asyncio
-import subprocess
 import signal
 import time
 import psutil
@@ -11,8 +10,8 @@ from pydantic import BaseModel
 
 # Import MCP client libraries
 import mcp
-from mcp import ClientSession
-from mcp.client.stdio import StdioClient
+from mcp.client.session import ClientSession
+from mcp.client.stdio import stdio_client
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -62,6 +61,7 @@ class BrightDataService:
         self.mcp_pid = None
         self.mcp_client = None
         self.mcp_session = None
+        self.mcp_context = None  # async context returned by stdio_client
         
         # Timeout and retry settings
         self.startup_timeout = 30  # seconds
@@ -166,40 +166,46 @@ class BrightDataService:
         # Kill existing process if it exists
         await self._cleanup_existing_process()
         
-        # Start new process
-        env = os.environ.copy()
-        env["API_TOKEN"] = self.api_token
-        
         try:
-            # Start the MCP process
-            self.mcp_process = subprocess.Popen(
-                ["npx", "@brightdata/mcp"],
-                env=env,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,  # Line buffered
-                preexec_fn=os.setsid  # Use process group for better cleanup
+            # Create stdio server parameters
+            server_params = mcp.StdioServerParameters(
+                command="npx",
+                args=["@brightdata/mcp"],
+                env={**os.environ, "API_TOKEN": self.api_token}
             )
-            self.mcp_pid = self.mcp_process.pid
-            logger.info(f"Bright Data MCP started with PID {self.mcp_pid}")
             
-            # Save PID to file
-            with open(self._pid_file, 'w') as f:
-                f.write(str(self.mcp_pid))
+            # Create MCP streams and session
+            self.mcp_context = stdio_client(server_params)
+            read_stream, write_stream = await self.mcp_context.__aenter__()
+            self.mcp_session = ClientSession(read_stream, write_stream)
             
-            # Wait for MCP to be ready and connect to it
-            success = await self._connect_to_mcp()
+            # Get the PID of the process
+            # Note: We need to find a way to get the PID from the MCP client
+            # For now, we'll use psutil to find the process
+            for proc in psutil.process_iter(['pid', 'cmdline']):
+                try:
+                    if proc.info['cmdline'] and "@brightdata/mcp" in " ".join(proc.info['cmdline']):
+                        self.mcp_pid = proc.info['pid']
+                        break
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
             
-            if not success:
-                # Cleanup on failure
-                await self._cleanup_existing_process()
-                if os.path.exists(self._pid_file):
-                    os.unlink(self._pid_file)
-                return False
+            if self.mcp_pid:
+                logger.info(f"Bright Data MCP started with PID {self.mcp_pid}")
                 
+                # Save PID to file
+                with open(self._pid_file, 'w') as f:
+                    f.write(str(self.mcp_pid))
+            
+            # Initialize the session (MCP client handles the protocol automatically)
+            await self.mcp_session.initialize()
+            
+            # Ping to verify connection
+            await self.mcp_session.ping()
+            
+            logger.info("Bright Data MCP client connected successfully")
             return True
+                
         except Exception as e:
             logger.error(f"Failed to start Bright Data MCP: {str(e)}")
             # Cleanup on error
@@ -208,93 +214,26 @@ class BrightDataService:
                 os.unlink(self._pid_file)
             return False
     
-    async def _connect_to_mcp(self) -> bool:
-        """
-        Connect to the MCP process using the MCP client library.
-        
-        Returns:
-            bool: True if connection was successful, False otherwise.
-        """
-        start_time = asyncio.get_event_loop().time()
-        retry_count = 0
-        
-        while asyncio.get_event_loop().time() - start_time < self.startup_timeout:
-            try:
-                # Check if process is still running
-                if self.mcp_process.poll() is not None:
-                    logger.error(f"Bright Data MCP process terminated unexpectedly with code {self.mcp_process.poll()}")
-                    return False
-                
-                # Create MCP client
-                self.mcp_client = StdioClient(
-                    stdin=self.mcp_process.stdin,
-                    stdout=self.mcp_process.stdout
-                )
-                
-                # Create MCP session
-                self.mcp_session = ClientSession(self.mcp_client)
-                
-                # Initialize the session
-                await self.mcp_session.initialize(
-                    mcp.InitializeRequest(
-                        capabilities=mcp.ClientCapabilities(
-                            tools=mcp.ToolsCapability(
-                                supports_dynamic_tools=True
-                            )
-                        )
-                    )
-                )
-                
-                # Ping to verify connection
-                await self.mcp_session.ping()
-                
-                logger.info("Bright Data MCP client connected successfully")
-                return True
-                
-            except Exception as e:
-                logger.warning(f"Failed to connect to Bright Data MCP (attempt {retry_count + 1}): {str(e)}")
-                
-                # Calculate backoff delay
-                retry_count += 1
-                delay = min(self.retry_delay * (2 ** (retry_count - 1)), 10)
-                logger.debug(f"Retrying connection in {delay} seconds")
-                await asyncio.sleep(delay)
-        
-        logger.error("Timed out waiting for Bright Data MCP to start")
-        return False
-    
     async def _cleanup_existing_process(self):
         """Clean up existing MCP process with proper signal handling."""
         # Close MCP client and session if they exist
-        if self.mcp_client:
+        if self.mcp_session:
             try:
-                await self.mcp_client.close()
+                # ClientSession has no close() – context closed separately
+                pass
             except Exception as e:
-                logger.error(f"Error closing MCP client: {str(e)}")
+                logger.error(f"Error closing MCP session: {str(e)}")
             self.mcp_client = None
             self.mcp_session = None
-        
-        # First try to terminate the process we started
-        if self.mcp_process and self.mcp_process.poll() is None:
+        # Exit stdio_client context
+        if self.mcp_context:
             try:
-                logger.info(f"Terminating Bright Data MCP process (PID: {self.mcp_process.pid})")
-                # Try graceful termination first
-                self.mcp_process.terminate()
-                
-                # Wait for process to terminate
-                for _ in range(5):  # Wait up to 5 seconds
-                    if self.mcp_process.poll() is not None:
-                        break
-                    await asyncio.sleep(1)
-                
-                # Force kill if still running
-                if self.mcp_process.poll() is None:
-                    logger.warning(f"Force killing Bright Data MCP process (PID: {self.mcp_process.pid})")
-                    self.mcp_process.kill()
+                await self.mcp_context.__aexit__(None, None, None)
             except Exception as e:
-                logger.error(f"Error terminating Bright Data MCP process: {str(e)}")
+                logger.warning(f"Error exiting MCP stdio context: {e}")
+            self.mcp_context = None
         
-        # Also try to terminate by PID (in case we restored from PID file)
+        # Try to terminate by PID if we have it
         if self.mcp_pid and self._is_process_running(self.mcp_pid):
             try:
                 logger.info(f"Terminating Bright Data MCP by PID: {self.mcp_pid}")
@@ -482,15 +421,19 @@ class BrightDataService:
     
     async def close(self):
         """Close the service and terminate the MCP process."""
-        # Close MCP client if it exists
-        if self.mcp_client:
-            try:
-                await self.mcp_client.close()
-                logger.info("Closed Bright Data MCP client")
-            except Exception as e:
-                logger.error(f"Error closing MCP client: {str(e)}")
+        # Close MCP session if it exists
+        if self.mcp_session:
+            # ClientSession does not expose an explicit close method.
+            # Simply drop the references so the GC can clean them up.
             self.mcp_client = None
             self.mcp_session = None
+        # Exit stdio context
+        if self.mcp_context:
+            try:
+                await self.mcp_context.__aexit__(None, None, None)
+            except Exception as e:
+                logger.warning(f"Error exiting MCP stdio context: {e}")
+            self.mcp_context = None
         
         # Clean up process
         await self._cleanup_existing_process()

@@ -1,7 +1,6 @@
 import os
 import logging
 import asyncio
-import subprocess
 import signal
 import time
 import psutil
@@ -13,8 +12,8 @@ from pydantic import BaseModel, Field
 
 # Import MCP client libraries
 import mcp
-from mcp import ClientSession
-from mcp.client.stdio import StdioClient
+from mcp.client.session import ClientSession
+from mcp.client.stdio import stdio_client
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -97,6 +96,8 @@ class MiniMaxService:
         self.mcp_pid = None
         self.mcp_client = None
         self.mcp_session = None
+        # async context manager returned by stdio_client
+        self.mcp_context: Optional[asyncio.AbstractAsyncContextManager] = None
         
         # Timeout and retry settings
         self.startup_timeout = 30  # seconds
@@ -206,43 +207,48 @@ class MiniMaxService:
         # Kill existing process if it exists
         await self._cleanup_existing_process()
         
-        # Start new process
-        env = os.environ.copy()
-        env["MINIMAX_API_KEY"] = self.api_key
-        env["MINIMAX_API_HOST"] = self.api_host
-        env["MINIMAX_MCP_BASE_PATH"] = self.mcp_base_path
-        env["MINIMAX_API_RESOURCE_MODE"] = self.resource_mode
-        
         try:
-            # Start the MCP process
-            self.mcp_process = subprocess.Popen(
-                ["uvx", "minimax-mcp", "-y"],
-                env=env,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,  # Line buffered
-                preexec_fn=os.setsid  # Use process group for better cleanup
+            # Create stdio server parameters
+            server_params = mcp.StdioServerParameters(
+                command="uvx",
+                args=["minimax-mcp", "-y"],
+                env={
+                    **os.environ,
+                    "MINIMAX_API_KEY": self.api_key,
+                    "MINIMAX_API_HOST": self.api_host,
+                    "MINIMAX_MCP_BASE_PATH": self.mcp_base_path,
+                    "MINIMAX_API_RESOURCE_MODE": self.resource_mode
+                }
             )
-            self.mcp_pid = self.mcp_process.pid
-            logger.info(f"MiniMax MCP started with PID {self.mcp_pid}")
             
-            # Save PID to file
-            with open(self._pid_file, 'w') as f:
-                f.write(str(self.mcp_pid))
+            # Create MCP streams and session
+            self.mcp_context = stdio_client(server_params)
+            read_stream, write_stream = await self.mcp_context.__aenter__()
+            self.mcp_session = ClientSession(read_stream, write_stream)
             
-            # Wait for MCP to be ready and connect to it
-            success = await self._connect_to_mcp()
+            # Get the PID of the process using psutil
+            for proc in psutil.process_iter(['pid', 'cmdline']):
+                try:
+                    if proc.info['cmdline'] and "minimax-mcp" in " ".join(proc.info['cmdline']):
+                        self.mcp_pid = proc.info['pid']
+                        break
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
             
-            if not success:
-                # Cleanup on failure
-                await self._cleanup_existing_process()
-                if os.path.exists(self._pid_file):
-                    os.unlink(self._pid_file)
-                return False
-                
+            if self.mcp_pid:
+                logger.info(f"MiniMax MCP started with PID {self.mcp_pid}")
+                with open(self._pid_file, 'w') as f:
+                    f.write(str(self.mcp_pid))
+            
+            # Initialize the session (MCP client handles the protocol automatically)
+            await self.mcp_session.initialize()
+            
+            # Ping to verify connection
+            await self.mcp_session.ping()
+            
+            logger.info("MiniMax MCP client connected successfully")
             return True
+            
         except Exception as e:
             logger.error(f"Failed to start MiniMax MCP: {str(e)}")
             # Cleanup on error
@@ -251,93 +257,20 @@ class MiniMaxService:
                 os.unlink(self._pid_file)
             return False
     
-    async def _connect_to_mcp(self) -> bool:
-        """
-        Connect to the MCP process using the MCP client library.
-        
-        Returns:
-            bool: True if connection was successful, False otherwise.
-        """
-        start_time = asyncio.get_event_loop().time()
-        retry_count = 0
-        
-        while asyncio.get_event_loop().time() - start_time < self.startup_timeout:
-            try:
-                # Check if process is still running
-                if self.mcp_process.poll() is not None:
-                    logger.error(f"MiniMax MCP process terminated unexpectedly with code {self.mcp_process.poll()}")
-                    return False
-                
-                # Create MCP client
-                self.mcp_client = StdioClient(
-                    stdin=self.mcp_process.stdin,
-                    stdout=self.mcp_process.stdout
-                )
-                
-                # Create MCP session
-                self.mcp_session = ClientSession(self.mcp_client)
-                
-                # Initialize the session
-                await self.mcp_session.initialize(
-                    mcp.InitializeRequest(
-                        capabilities=mcp.ClientCapabilities(
-                            tools=mcp.ToolsCapability(
-                                supports_dynamic_tools=True
-                            )
-                        )
-                    )
-                )
-                
-                # Ping to verify connection
-                await self.mcp_session.ping()
-                
-                logger.info("MiniMax MCP client connected successfully")
-                return True
-                
-            except Exception as e:
-                logger.warning(f"Failed to connect to MiniMax MCP (attempt {retry_count + 1}): {str(e)}")
-                
-                # Calculate backoff delay
-                retry_count += 1
-                delay = min(self.retry_delay * (2 ** (retry_count - 1)), 10)
-                logger.debug(f"Retrying connection in {delay} seconds")
-                await asyncio.sleep(delay)
-        
-        logger.error("Timed out waiting for MiniMax MCP to start")
-        return False
-    
     async def _cleanup_existing_process(self):
         """Clean up existing MCP process with proper signal handling."""
-        # Close MCP client and session if they exist
-        if self.mcp_client:
-            try:
-                await self.mcp_client.close()
-            except Exception as e:
-                logger.error(f"Error closing MCP client: {str(e)}")
-            self.mcp_client = None
+        # Close MCP session and stdio context if they exist
+        if self.mcp_session:
             self.mcp_session = None
-        
-        # First try to terminate the process we started
-        if self.mcp_process and self.mcp_process.poll() is None:
+
+        if self.mcp_context:
             try:
-                logger.info(f"Terminating MiniMax MCP process (PID: {self.mcp_process.pid})")
-                # Try graceful termination first
-                self.mcp_process.terminate()
-                
-                # Wait for process to terminate
-                for _ in range(5):  # Wait up to 5 seconds
-                    if self.mcp_process.poll() is not None:
-                        break
-                    await asyncio.sleep(1)
-                
-                # Force kill if still running
-                if self.mcp_process.poll() is None:
-                    logger.warning(f"Force killing MiniMax MCP process (PID: {self.mcp_process.pid})")
-                    self.mcp_process.kill()
+                await self.mcp_context.__aexit__(None, None, None)
             except Exception as e:
-                logger.error(f"Error terminating MiniMax MCP process: {str(e)}")
+                logger.warning(f"Error exiting MCP stdio context: {str(e)}")
+            self.mcp_context = None
         
-        # Also try to terminate by PID (in case we restored from PID file)
+        # Try to terminate by PID if we have it
         if self.mcp_pid and self._is_process_running(self.mcp_pid):
             try:
                 logger.info(f"Terminating MiniMax MCP by PID: {self.mcp_pid}")
@@ -611,15 +544,17 @@ class MiniMaxService:
     
     async def close(self):
         """Close the service and terminate the MCP process."""
-        # Close MCP client if it exists
-        if self.mcp_client:
-            try:
-                await self.mcp_client.close()
-                logger.info("Closed MiniMax MCP client")
-            except Exception as e:
-                logger.error(f"Error closing MCP client: {str(e)}")
-            self.mcp_client = None
+        # Close MCP session if it exists
+        if self.mcp_session:
             self.mcp_session = None
+
+        # Exit stdio context
+        if self.mcp_context:
+            try:
+                await self.mcp_context.__aexit__(None, None, None)
+            except Exception as e:
+                logger.warning(f"Error exiting MCP stdio context: {e}")
+            self.mcp_context = None
         
         # Clean up process
         await self._cleanup_existing_process()
