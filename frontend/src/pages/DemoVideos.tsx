@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import api from '../services/api';
+// Correct API client import
+import { apiService } from '../services/api';
 
 interface DemoPrompt {
   id: string;
@@ -68,7 +69,7 @@ const DemoVideos: React.FC = () => {
 
     try {
       // Call API to start video generation
-      const response = await api.post('/videos/generate', {
+      const response = await apiService.post('/api/generate-video', {
         post_id: `demo-${prompt.id}`,
         caption: prompt.text,
         image_url: prompt.imageUrl || '',
@@ -107,7 +108,7 @@ const DemoVideos: React.FC = () => {
   // Poll for video status until complete or error
   const pollVideoStatus = async (promptId: string, videoId: string) => {
     try {
-      const response = await api.get(`/videos/status/${videoId}`);
+      const response = await apiService.get(`/api/video-status/${videoId}`);
       const { status, video_url, thumbnail_url, error } = response.data;
 
       if (status === 'completed' && video_url) {
@@ -151,17 +152,18 @@ const DemoVideos: React.FC = () => {
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="bg-gradient-to-r from-purple-600 to-indigo-700 rounded-lg p-6 mb-8 shadow-lg">
-        <h1 className="text-3xl font-bold text-white mb-2">🎬 Curated Demo Videos</h1>
+        <h1 className="text-3xl font-bold text-white mb-2">🎬 Video Templates</h1>
         <p className="text-white text-lg opacity-90">
-          Generate viral videos instantly with these hand-picked prompts that&nbsp;
-          showcase the power of our MiniMax video pipeline. No Instagram content
-          required — just click &amp; create!
+          Explore a selection of professionally-crafted prompts designed to
+          highlight the full capabilities of our AI video engine. Simply choose a
+          template and generate a high-impact video in one click—no additional
+          content required.
         </p>
         <div className="mt-4 bg-white bg-opacity-20 p-3 rounded-md">
           <p className="text-white text-sm">
-            <span className="font-bold">⚡ QUICK DEMO:</span> These prompts run through the <em>exact&nbsp;same</em> MiniMax
-            pipeline as user-generated videos, giving you an immediate taste of the
-            final results.
+            These templates run through the same production-grade MiniMax
+            pipeline used for your custom videos, delivering studio-quality
+            results in seconds.
           </p>
         </div>
       </div>
