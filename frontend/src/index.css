@@ -1,0 +1,267 @@
+/* Tailwind CSS Imports */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base styles */
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  
+  body {
+    @apply antialiased text-text-primary-light dark:text-text-primary-dark bg-ui-background-light dark:bg-ui-background-dark;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display font-semibold tracking-tight;
+  }
+  
+  /* Focus states for accessibility */
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand ring-offset-2 ring-offset-white dark:ring-offset-gray-900 rounded-sm;
+  }
+  
+  /* Remove default focus for mouse users */
+  :focus:not(:focus-visible) {
+    @apply outline-none;
+  }
+}
+
+/* Custom scrollbar styles */
+@layer components {
+  /* Chrome, Edge, and Safari */
+  ::-webkit-scrollbar {
+    @apply w-2 h-2;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-gray-100 dark:bg-gray-800;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 dark:bg-gray-600 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-400 dark:bg-gray-500;
+  }
+
+  /* Firefox */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.gray.300') theme('colors.gray.100');
+  }
+
+  .dark * {
+    scrollbar-color: theme('colors.gray.600') theme('colors.gray.800');
+  }
+}
+
+/* Animation classes */
+@layer utilities {
+  .animate-once {
+    animation-iteration-count: 1;
+  }
+
+  .animate-twice {
+    animation-iteration-count: 2;
+  }
+
+  .animate-thrice {
+    animation-iteration-count: 3;
+  }
+
+  .animate-infinite {
+    animation-iteration-count: infinite;
+  }
+
+  .animation-delay-100 {
+    animation-delay: 100ms;
+  }
+
+  .animation-delay-200 {
+    animation-delay: 200ms;
+  }
+
+  .animation-delay-300 {
+    animation-delay: 300ms;
+  }
+
+  .animation-delay-500 {
+    animation-delay: 500ms;
+  }
+
+  .animation-delay-700 {
+    animation-delay: 700ms;
+  }
+
+  .animation-delay-1000 {
+    animation-delay: 1000ms;
+  }
+}
+
+/* Loading animations */
+@layer components {
+  /* Spinner */
+  .spinner {
+    @apply inline-block h-6 w-6 animate-spin rounded-full border-4 border-solid border-current border-r-transparent align-[-0.125em] motion-reduce:animate-[spin_1.5s_linear_infinite];
+  }
+
+  .spinner-sm {
+    @apply h-4 w-4 border-2;
+  }
+
+  .spinner-lg {
+    @apply h-8 w-8 border-[5px];
+  }
+
+  .spinner-xl {
+    @apply h-12 w-12 border-[6px];
+  }
+
+  /* Skeleton loaders */
+  .skeleton {
+    @apply animate-pulse bg-gray-200 dark:bg-gray-700 rounded;
+  }
+
+  .skeleton-text {
+    @apply h-4 w-full skeleton;
+  }
+
+  .skeleton-circle {
+    @apply rounded-full skeleton;
+  }
+
+  .skeleton-image {
+    @apply aspect-video w-full skeleton;
+  }
+
+  /* Progress bar */
+  .progress-bar {
+    @apply h-1 w-full bg-gray-200 dark:bg-gray-700 overflow-hidden;
+  }
+
+  .progress-bar-fill {
+    @apply h-full bg-brand transition-all duration-300 ease-out;
+  }
+}
+
+/* Global component styles */
+@layer components {
+  /* Buttons */
+  .btn {
+    @apply inline-flex items-center justify-center rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50;
+  }
+
+  .btn-sm {
+    @apply h-8 px-3 text-xs;
+  }
+
+  .btn-md {
+    @apply h-10 px-4 py-2 text-sm;
+  }
+
+  .btn-lg {
+    @apply h-12 px-6 py-3 text-base;
+  }
+
+  .btn-primary {
+    @apply bg-brand text-white hover:bg-brand-dark focus-visible:ring-brand;
+  }
+
+  .btn-secondary {
+    @apply bg-gray-200 text-gray-900 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-100 dark:hover:bg-gray-600 focus-visible:ring-gray-400;
+  }
+
+  .btn-outline {
+    @apply border border-gray-300 bg-transparent text-gray-900 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-100 dark:hover:bg-gray-800 focus-visible:ring-gray-400;
+  }
+
+  .btn-ghost {
+    @apply bg-transparent text-gray-900 hover:bg-gray-100 dark:text-gray-100 dark:hover:bg-gray-800 focus-visible:ring-gray-400;
+  }
+
+  .btn-danger {
+    @apply bg-red-500 text-white hover:bg-red-600 focus-visible:ring-red-500;
+  }
+
+  /* Cards */
+  .card {
+    @apply rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800;
+  }
+
+  .card-header {
+    @apply flex flex-col space-y-1.5 p-6;
+  }
+
+  .card-content {
+    @apply p-6 pt-0;
+  }
+
+  .card-footer {
+    @apply flex items-center p-6 pt-0;
+  }
+
+  /* Inputs */
+  .input {
+    @apply flex h-10 w-full rounded-md border border-gray-300 bg-transparent px-3 py-2 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-50 dark:focus:ring-brand;
+  }
+
+  /* Video player */
+  .video-player {
+    @apply relative overflow-hidden rounded-lg bg-black;
+  }
+
+  .video-player video {
+    @apply w-full h-full object-contain;
+  }
+
+  .video-controls {
+    @apply absolute bottom-0 left-0 right-0 flex items-center justify-between p-4 bg-gradient-to-t from-black/80 to-transparent text-white opacity-0 transition-opacity hover:opacity-100 focus-within:opacity-100;
+  }
+
+  /* Instagram post card */
+  .instagram-post {
+    @apply card overflow-hidden transition-all duration-300 hover:shadow-md cursor-pointer;
+  }
+
+  .instagram-post-image {
+    @apply aspect-square w-full object-cover;
+  }
+
+  .instagram-post-content {
+    @apply p-4;
+  }
+
+  .instagram-post-caption {
+    @apply text-sm line-clamp-2;
+  }
+
+  .instagram-post-stats {
+    @apply mt-2 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400;
+  }
+
+  /* Video generation form */
+  .generation-form {
+    @apply space-y-6;
+  }
+
+  .form-group {
+    @apply space-y-2;
+  }
+
+  .form-label {
+    @apply text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70;
+  }
+
+  /* Tabs */
+  .tabs {
+    @apply flex border-b border-gray-200 dark:border-gray-700;
+  }
+
+  .tab {
+    @apply px-4 py-2 text-sm font-medium -mb-px border-b-2 border-transparent hover:text-brand hover:border-brand/30 data-[state=active]:border-brand data-[state=active]:text-brand;
+  }
+}
