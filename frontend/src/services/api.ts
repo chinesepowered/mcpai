@@ -16,7 +16,10 @@ import {
  */
 const API_CONFIG = {
   BASE_URL: '/api',
-  TIMEOUT: 30000, // 30 seconds
+  // Default timeout for most API calls
+  TIMEOUT: 60000, // 60 seconds
+  // Video generation can take several minutes on MiniMax – use a much larger timeout
+  VIDEO_GENERATION_TIMEOUT: 600000, // 10 minutes
   RETRY_COUNT: 3,
   RETRY_DELAY: 1000, // 1 second
   ENDPOINTS: {
@@ -148,7 +151,11 @@ export const apiService = {
     try {
       const response = await apiClient.post<VideoGenerationResponse>(
         API_CONFIG.ENDPOINTS.GENERATE_VIDEO,
-        request
+        request,
+        {
+          // Override default timeout for long-running generation job
+          timeout: API_CONFIG.VIDEO_GENERATION_TIMEOUT,
+        }
       );
       return response.data;
     } catch (error) {

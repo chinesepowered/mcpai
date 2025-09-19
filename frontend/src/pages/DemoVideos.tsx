@@ -16,6 +16,9 @@ interface VideoStatus {
   videoUrl?: string;
   thumbnailUrl?: string;
   error?: string;
+  startTime?: number;
+  progress?: number;
+  elapsedSeconds?: number;
 }
 
 const DemoVideos: React.FC = () => {
@@ -61,10 +64,14 @@ const DemoVideos: React.FC = () => {
 
   // Generate video for a demo prompt
   const generateVideo = async (prompt: DemoPrompt) => {
-    // Update loading state
+    // Update loading state with start time
     setVideoStatus(prev => ({
       ...prev,
-      [prompt.id]: { loading: true }
+      [prompt.id]: { 
+        loading: true,
+        startTime: Date.now(),
+        progress: 0
+      }
     }));
 
     try {
@@ -86,6 +93,7 @@ const DemoVideos: React.FC = () => {
       setVideoStatus(prev => ({
         ...prev,
         [prompt.id]: { 
+          ...prev[prompt.id],
           loading: true,
           videoId: video_id
         }
@@ -108,7 +116,12 @@ const DemoVideos: React.FC = () => {
   // Poll for video status until complete or error
   const pollVideoStatus = async (promptId: string, videoId: string) => {
     try {
-      const { status, video_url, thumbnail_url, error } = await apiService.getVideoStatus(videoId);
+      const { status, video_url, thumbnail_url, error, progress } = await apiService.getVideoStatus(videoId);
+
+      // Calculate elapsed time
+      const currentStatus = videoStatus[promptId];
+      const startTime = currentStatus.startTime || Date.now();
+      const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
 
       if (status === 'completed' && video_url) {
         // Video is ready
@@ -132,8 +145,18 @@ const DemoVideos: React.FC = () => {
           }
         }));
       } else {
-        // Still processing, poll again after delay
-        setTimeout(() => pollVideoStatus(promptId, videoId), 3000);
+        // Update progress information
+        setVideoStatus(prev => ({
+          ...prev,
+          [promptId]: {
+            ...prev[promptId],
+            progress: progress || Math.min(0.95, elapsedSeconds / 300), // Estimate progress if not provided
+            elapsedSeconds
+          }
+        }));
+        
+        // Still processing, poll again after delay (increased to 5000ms to match backend)
+        setTimeout(() => pollVideoStatus(promptId, videoId), 5000);
       }
     } catch (error) {
       console.error('Error polling video status:', error);
@@ -146,6 +169,31 @@ const DemoVideos: React.FC = () => {
         }
       }));
     }
+  };
+
+  // Calculate estimated time remaining
+  const getTimeRemaining = (status: VideoStatus): string => {
+    if (!status.progress || status.progress < 0.05) {
+      return "Initializing...";
+    }
+    
+    const elapsedSeconds = status.elapsedSeconds || 0;
+    const estimatedTotalSeconds = elapsedSeconds / (status.progress || 0.1);
+    const remainingSeconds = Math.max(0, Math.ceil(estimatedTotalSeconds - elapsedSeconds));
+    
+    if (remainingSeconds > 90) {
+      return `About ${Math.ceil(remainingSeconds / 60)} minutes remaining`;
+    } else {
+      return `About ${remainingSeconds} seconds remaining`;
+    }
+  };
+
+  // Format elapsed time
+  const formatElapsedTime = (seconds?: number): string => {
+    if (!seconds) return "0:00";
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
   };
 
   return (
@@ -196,15 +244,32 @@ const DemoVideos: React.FC = () => {
                 </button>
               )}
 
-              {/* Loading state */}
+              {/* Loading state with enhanced progress information */}
               {videoStatus[prompt.id].loading && (
                 <div className="mt-4">
-                  <div className="w-full bg-gray-200 rounded-full h-2.5">
-                    <div className="bg-indigo-600 h-2.5 rounded-full animate-pulse w-full"></div>
+                  <div className="w-full bg-gray-200 rounded-full h-2.5 mb-2">
+                    <div 
+                      className="bg-indigo-600 h-2.5 rounded-full transition-all duration-500" 
+                      style={{ 
+                        width: `${Math.max(5, Math.min(100, (videoStatus[prompt.id].progress || 0) * 100))}%` 
+                      }}
+                    ></div>
                   </div>
-                  <p className="text-sm text-gray-600 mt-2 text-center">
-                    Generating your video... This may take 1-2 minutes.
-                  </p>
+                  <div className="flex justify-between text-xs text-gray-500 mb-2">
+                    <span>Processing</span>
+                    <span>{Math.round((videoStatus[prompt.id].progress || 0) * 100)}%</span>
+                  </div>
+                  <div className="text-sm text-gray-600 text-center space-y-1">
+                    <p className="font-medium">
+                      Generating your video... This can take 3-5 minutes.
+                    </p>
+                    <p className="text-xs">
+                      Elapsed time: {formatElapsedTime(videoStatus[prompt.id].elapsedSeconds)}
+                    </p>
+                    <p className="text-xs text-indigo-600 font-medium">
+                      {getTimeRemaining(videoStatus[prompt.id])}
+                    </p>
+                  </div>
                 </div>
               )}
 
@@ -256,7 +321,7 @@ const DemoVideos: React.FC = () => {
 
       <div className="mt-8 flex justify-center">
         <button
-          onClick={() => navigate('/content')}
+          onClick={() => navigate('/discover')}
           className="bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium py-2 px-4 rounded-md transition duration-200"
         >
           Back to Content Discovery

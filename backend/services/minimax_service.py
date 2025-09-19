@@ -101,7 +101,8 @@ class MiniMaxService:
         
         # Timeout and retry settings
         self.startup_timeout = 30  # seconds
-        self.request_timeout = 300  # seconds for video generation (longer timeout)
+        # Allow up to 10 minutes for long-running video generation jobs
+        self.request_timeout = 600  # seconds
         self.max_retries = 3
         self.retry_delay = 2  # seconds
         
@@ -400,7 +401,8 @@ class MiniMaxService:
             await asyncio.sleep(2)
             
             # Check status periodically
-            max_checks = 60  # Maximum number of status checks
+            # 120 × 5 s  ≈ 10 minutes total polling window
+            max_checks = 120  # Maximum number of status checks
             check_interval = 5  # Seconds between checks
             
             for i in range(max_checks):
