@@ -6,9 +6,12 @@ import signal
 import time
 import psutil
 import tempfile
+import json
+import random
+import datetime
+import uuid
 from pathlib import Path
-from typing import Dict, Any, Optional
-import httpx
+from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
 
 # Configure logging
@@ -53,6 +56,51 @@ class MiniMaxService:
     _instance = None
     _pid_file = os.path.join(os.path.expanduser("~"), ".minimax_mcp.pid")
     
+    # Sample data for mock implementation
+    _mock_video_urls = [
+        "https://example.com/videos/viral_comedy_1.mp4",
+        "https://example.com/videos/viral_comedy_2.mp4",
+        "https://example.com/videos/viral_tech_1.mp4",
+        "https://example.com/videos/viral_tech_2.mp4",
+        "https://example.com/videos/viral_lifestyle_1.mp4",
+    ]
+    
+    _mock_thumbnail_urls = [
+        "https://example.com/thumbnails/viral_comedy_1.jpg",
+        "https://example.com/thumbnails/viral_comedy_2.jpg",
+        "https://example.com/thumbnails/viral_tech_1.jpg",
+        "https://example.com/thumbnails/viral_tech_2.jpg",
+        "https://example.com/thumbnails/viral_lifestyle_1.jpg",
+    ]
+    
+    _mock_styles = {
+        "comedy": {
+            "duration_range": (20, 45),
+            "progress_speed": 1.0,
+            "success_rate": 0.95
+        },
+        "dramatic": {
+            "duration_range": (30, 60),
+            "progress_speed": 0.8,
+            "success_rate": 0.9
+        },
+        "inspirational": {
+            "duration_range": (25, 50),
+            "progress_speed": 0.9,
+            "success_rate": 0.95
+        },
+        "educational": {
+            "duration_range": (40, 90),
+            "progress_speed": 0.7,
+            "success_rate": 0.85
+        },
+        "cinematic": {
+            "duration_range": (45, 120),
+            "progress_speed": 0.6,
+            "success_rate": 0.8
+        }
+    }
+    
     def __new__(cls, *args, **kwargs):
         """Implement singleton pattern to ensure only one service instance exists."""
         if cls._instance is None:
@@ -90,8 +138,6 @@ class MiniMaxService:
         # MCP process management
         self.mcp_process = None
         self.mcp_pid = None
-        self.mcp_port = 8192  # Default MiniMax MCP port
-        self.mcp_base_url = f"http://localhost:{self.mcp_port}"
         
         # Timeout and retry settings
         self.startup_timeout = 30  # seconds
@@ -107,6 +153,9 @@ class MiniMaxService:
         self.video_status_cache: Dict[str, VideoStatus] = {}
         self.output_dir = Path(tempfile.gettempdir()) / "minimax_videos"
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Active generation tasks
+        self._active_tasks: Dict[str, asyncio.Task] = {}
         
         # Mark as initialized
         self.initialized = True
@@ -145,193 +194,62 @@ class MiniMaxService:
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             return False
     
-    async def _check_mcp_health(self) -> bool:
-        """Check if the MCP server is healthy and responsive."""
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{self.mcp_base_url}/status",
-                    timeout=5
-                )
-            return response.status_code == 200
-        except (httpx.RequestError, asyncio.TimeoutError):
-            return False
-    
     async def ensure_mcp_running(self) -> bool:
         """
         Ensure that the MiniMax MCP is running.
-        Uses a lock to prevent concurrent startup attempts.
+        
+        For mock implementation, always returns True.
         
         Returns:
             bool: True if MCP is running, False otherwise.
         """
-        # First check if we need to do a health check
-        current_time = time.time()
-        if self.mcp_pid and (current_time - self.last_health_check) > self.health_check_interval:
-            self.last_health_check = current_time
-            
-            # Check if process is still running and healthy
-            if not self._is_process_running(self.mcp_pid) or not await self._check_mcp_health():
-                logger.warning(f"MiniMax MCP (PID: {self.mcp_pid}) is not responsive, will restart")
-                self.mcp_pid = None
-                # Clean up PID file
-                if os.path.exists(self._pid_file):
-                    os.unlink(self._pid_file)
-        
-        # If we have a valid PID, check if it's responsive
-        if self.mcp_pid:
-            try:
-                # Verify MCP is responsive
-                if await self._check_mcp_health():
-                    return True
-                logger.warning(f"MiniMax MCP (PID: {self.mcp_pid}) is not responsive, will restart")
-                self.mcp_pid = None
-            except Exception as e:
-                logger.warning(f"Error checking MiniMax MCP health: {str(e)}")
-                self.mcp_pid = None
-        
-        # Acquire lock to prevent concurrent startup attempts
-        async with self._startup_lock:
-            # Double-check if another thread started the process while we were waiting
-            if self.mcp_pid and await self._check_mcp_health():
-                return True
-            
-            # Start MCP if not running or not responsive
-            return await self._start_mcp()
+        # For mock implementation, we'll just return True
+        # This keeps the API compatible with the real implementation
+        logger.info("Mock implementation: MiniMax MCP considered running")
+        return True
     
     async def _start_mcp(self) -> bool:
         """
         Start the MiniMax MCP process.
         
+        For mock implementation, always returns True.
+        
         Returns:
             bool: True if MCP started successfully, False otherwise.
         """
-        logger.info("Starting MiniMax MCP")
-        
-        # Kill existing process if it exists
-        await self._cleanup_existing_process()
-        
-        # Start new process
-        env = os.environ.copy()
-        env["MINIMAX_API_KEY"] = self.api_key
-        env["MINIMAX_MCP_BASE_PATH"] = self.mcp_base_path
-        env["MINIMAX_API_HOST"] = self.api_host
-        env["MINIMAX_API_RESOURCE_MODE"] = self.resource_mode
-        
-        try:
-            self.mcp_process = subprocess.Popen(
-                ["uvx", "minimax-mcp", "-y"],
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                preexec_fn=os.setsid  # Use process group for better cleanup
-            )
-            self.mcp_pid = self.mcp_process.pid
-            logger.info(f"MiniMax MCP started with PID {self.mcp_pid}")
-            
-            # Save PID to file
-            with open(self._pid_file, 'w') as f:
-                f.write(str(self.mcp_pid))
-            
-            # Wait for MCP to be ready with retries
-            success = await self._wait_for_mcp_ready()
-            
-            if not success:
-                # Cleanup on failure
-                await self._cleanup_existing_process()
-                if os.path.exists(self._pid_file):
-                    os.unlink(self._pid_file)
-                return False
-                
-            return True
-        except Exception as e:
-            logger.error(f"Failed to start MiniMax MCP: {str(e)}")
-            # Cleanup on error
-            await self._cleanup_existing_process()
-            if os.path.exists(self._pid_file):
-                os.unlink(self._pid_file)
-            return False
+        # For mock implementation, we'll just return True
+        logger.info("Mock implementation: MiniMax MCP considered started")
+        return True
     
     async def _wait_for_mcp_ready(self) -> bool:
-        """Wait for MCP to be ready with exponential backoff retries."""
-        start_time = asyncio.get_event_loop().time()
-        retry_count = 0
+        """
+        Wait for MCP to be ready by monitoring process output.
         
-        while asyncio.get_event_loop().time() - start_time < self.startup_timeout:
-            try:
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(
-                        f"{self.mcp_base_url}/status",
-                        timeout=5
-                    )
-                if response.status_code == 200:
-                    logger.info("MiniMax MCP is ready")
-                    return True
-            except (httpx.RequestError, asyncio.TimeoutError):
-                # Check if process is still running
-                if self.mcp_process and self.mcp_process.poll() is not None:
-                    logger.error("MiniMax MCP process terminated unexpectedly")
-                    return False
-                
-                # Calculate backoff delay
-                retry_count += 1
-                delay = min(self.retry_delay * (2 ** (retry_count - 1)), 10)
-                logger.debug(f"MCP not ready yet, retrying in {delay} seconds (attempt {retry_count})")
-                await asyncio.sleep(delay)
-        
-        logger.error("Timed out waiting for MiniMax MCP to start")
-        return False
+        For mock implementation, always returns True.
+        """
+        # For mock implementation, we'll just return True
+        return True
+    
+    async def _read_process_output(self, stream):
+        """Read output from process stream until a relevant line is found."""
+        # For mock implementation, we'll just return an empty string
+        return ""
     
     async def _cleanup_existing_process(self):
         """Clean up existing MCP process with proper signal handling."""
-        # First try to terminate the process we started
-        if self.mcp_process and self.mcp_process.poll() is None:
-            try:
-                logger.info(f"Terminating MiniMax MCP process (PID: {self.mcp_process.pid})")
-                # Try graceful termination first
-                self.mcp_process.terminate()
-                
-                # Wait for process to terminate
-                for _ in range(5):  # Wait up to 5 seconds
-                    if self.mcp_process.poll() is not None:
-                        break
-                    await asyncio.sleep(1)
-                
-                # Force kill if still running
-                if self.mcp_process.poll() is None:
-                    logger.warning(f"Force killing MiniMax MCP process (PID: {self.mcp_process.pid})")
-                    self.mcp_process.kill()
-            except Exception as e:
-                logger.error(f"Error terminating MiniMax MCP process: {str(e)}")
-        
-        # Also try to terminate by PID (in case we restored from PID file)
-        if self.mcp_pid and self._is_process_running(self.mcp_pid):
-            try:
-                logger.info(f"Terminating MiniMax MCP by PID: {self.mcp_pid}")
-                # Try to kill the process group
-                os.killpg(os.getpgid(self.mcp_pid), signal.SIGTERM)
-                
-                # Wait for process to terminate
-                for _ in range(5):  # Wait up to 5 seconds
-                    if not self._is_process_running(self.mcp_pid):
-                        break
-                    await asyncio.sleep(1)
-                
-                # Force kill if still running
-                if self._is_process_running(self.mcp_pid):
-                    logger.warning(f"Force killing MiniMax MCP by PID: {self.mcp_pid}")
-                    os.killpg(os.getpgid(self.mcp_pid), signal.SIGKILL)
-            except Exception as e:
-                logger.error(f"Error terminating MiniMax MCP by PID: {str(e)}")
-        
-        # Reset process tracking
+        # For mock implementation, we'll just reset the process tracking
         self.mcp_process = None
         self.mcp_pid = None
+        
+        # Cancel any active tasks
+        for task_id, task in list(self._active_tasks.items()):
+            if not task.done():
+                task.cancel()
+        self._active_tasks.clear()
     
     async def generate_video(self, request: VideoGenerationRequest) -> VideoGenerationResponse:
         """
-        Generate a viral video based on Instagram post content.
+        Mock implementation: Generate a viral video based on Instagram post content.
         
         Args:
             request: Video generation request parameters
@@ -339,144 +257,132 @@ class MiniMaxService:
         Returns:
             VideoGenerationResponse: Response with video ID and initial status
         """
-        # Ensure MCP is running
-        if not await self.ensure_mcp_running():
-            raise RuntimeError("Failed to start MiniMax MCP")
+        logger.info(f"Mock implementation: Generating video for post: {request.post_id} with style: {request.style}")
         
-        logger.info(f"Generating video for post: {request.post_id} with style: {request.style}")
+        # Simulate network delay
+        await asyncio.sleep(0.5)
         
-        # Prepare the request payload
-        payload = {
-            "type": "video_generation",
-            "inputs": {
-                "content": {
-                    "post_id": request.post_id,
-                    "caption": request.caption,
-                    "image_url": request.image_url,
-                    "style": request.style,
-                    "duration": request.duration,
-                    "voice_type": request.voice_type,
-                    "include_captions": request.include_captions
-                }
-            },
-            "parameters": {
-                "output_format": "mp4",
-                "resolution": "720p",
-                "max_duration": request.duration,
-                "output_dir": str(self.output_dir)
-            }
-        }
+        # Generate a unique video ID
+        video_id = f"video_{uuid.uuid4().hex[:8]}_{request.post_id}"
         
-        if request.music_style:
-            payload["inputs"]["content"]["music_style"] = request.music_style
+        # Get current timestamp
+        created_at = datetime.datetime.now().isoformat()
         
-        # Implement retry logic for API requests
-        for attempt in range(self.max_retries):
-            try:
-                # Send request to MCP
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        f"{self.mcp_base_url}/generate",
-                        json=payload,
-                        timeout=self.request_timeout
-                    )
-                    
-                if response.status_code != 200:
-                    logger.error(f"Error from MiniMax MCP: {response.status_code} - {response.text}")
-                    
-                    # Check if we should retry
-                    if attempt < self.max_retries - 1 and response.status_code >= 500:
-                        delay = self.retry_delay * (2 ** attempt)
-                        logger.info(f"Retrying in {delay} seconds (attempt {attempt + 1}/{self.max_retries})")
-                        await asyncio.sleep(delay)
-                        continue
-                    
-                    raise RuntimeError(f"MiniMax MCP returned error: {response.status_code}")
-                
-                # Parse response
-                data = response.json()
-                
-                # Get video ID
-                video_id = data.get("video_id", f"video_{request.post_id}")
-                
-                # Create initial response
-                video_response = VideoGenerationResponse(
-                    video_id=video_id,
-                    status="processing",
-                    created_at=data.get("created_at")
-                )
-                
-                # Store status in cache
-                self.video_status_cache[video_id] = VideoStatus(
-                    video_id=video_id,
-                    status="processing",
-                    progress=0.0
-                )
-                
-                # Start background task to monitor video generation
-                asyncio.create_task(self._monitor_video_generation(video_id))
-                
-                return video_response
-                
-            except httpx.RequestError as e:
-                logger.error(f"Request error when generating video (attempt {attempt + 1}/{self.max_retries}): {str(e)}")
-                
-                # Check if we should retry
-                if attempt < self.max_retries - 1:
-                    delay = self.retry_delay * (2 ** attempt)
-                    logger.info(f"Retrying in {delay} seconds")
-                    await asyncio.sleep(delay)
-                    continue
-                
-                raise RuntimeError(f"Error communicating with MiniMax MCP: {str(e)}")
-                
-            except Exception as e:
-                logger.error(f"Error generating video: {str(e)}", exc_info=True)
-                raise RuntimeError(f"Error generating video: {str(e)}")
+        # Create initial response
+        video_response = VideoGenerationResponse(
+            video_id=video_id,
+            status="processing",
+            message="Video generation started",
+            created_at=created_at
+        )
+        
+        # Store initial status in cache
+        self.video_status_cache[video_id] = VideoStatus(
+            video_id=video_id,
+            status="processing",
+            progress=0.0
+        )
+        
+        # Start background task to simulate video generation
+        task = asyncio.create_task(self._mock_video_generation(video_id, request))
+        self._active_tasks[video_id] = task
+        
+        return video_response
     
-    async def _monitor_video_generation(self, video_id: str):
+    async def _mock_video_generation(self, video_id: str, request: VideoGenerationRequest):
         """
-        Monitor the status of a video generation task.
+        Mock implementation: Simulate video generation process with progress updates.
         
         Args:
-            video_id: ID of the video to monitor
+            video_id: ID of the video being generated
+            request: Original video generation request
         """
         try:
-            # Initial delay to allow processing to start
-            await asyncio.sleep(2)
+            # Get style configuration or use default
+            style_config = self._mock_styles.get(
+                request.style, 
+                {"duration_range": (20, 45), "progress_speed": 1.0, "success_rate": 0.9}
+            )
             
-            # Check status periodically
-            max_checks = 60  # Maximum number of status checks
-            check_interval = 5  # Seconds between checks
+            # Determine if generation will succeed based on success rate
+            will_succeed = random.random() < style_config["success_rate"]
             
-            for i in range(max_checks):
-                status = await self.get_video_status(video_id)
-                
-                # If completed or failed, stop checking
-                if status.status in ["completed", "failed"]:
-                    break
-                
-                # Update progress
-                if status.progress is not None:
-                    self.video_status_cache[video_id].progress = status.progress
-                
-                # Wait before next check
-                await asyncio.sleep(check_interval)
+            # Calculate total generation time based on style and requested duration
+            base_time = request.duration / 10  # Base time in seconds
+            style_factor = 1.0 / style_config["progress_speed"]
+            total_time = base_time * style_factor
             
-            # If still processing after max checks, mark as failed
-            if video_id in self.video_status_cache and self.video_status_cache[video_id].status == "processing":
-                self.video_status_cache[video_id].status = "failed"
-                self.video_status_cache[video_id].error = "Timed out waiting for video generation"
-                logger.error(f"Video generation timed out for video ID: {video_id}")
-        except Exception as e:
-            logger.error(f"Error monitoring video generation for video ID {video_id}: {str(e)}")
+            # Calculate number of progress updates
+            num_updates = min(10, int(total_time / 2))
+            update_interval = total_time / num_updates if num_updates > 0 else total_time
+            
+            # Simulate generation process with progress updates
+            for i in range(num_updates):
+                # Calculate progress percentage
+                progress = (i + 1) / num_updates
+                
+                # Update status in cache
+                if video_id in self.video_status_cache:
+                    self.video_status_cache[video_id].progress = progress
+                
+                # Simulate processing delay
+                await asyncio.sleep(update_interval)
+                
+                # If we should fail, do it randomly during generation
+                if not will_succeed and random.random() < 0.3 and i > num_updates / 2:
+                    if video_id in self.video_status_cache:
+                        self.video_status_cache[video_id].status = "failed"
+                        self.video_status_cache[video_id].error = "Mock error: Video generation failed"
+                    logger.warning(f"Mock implementation: Video generation failed for {video_id}")
+                    return
+            
+            # Finalize video if successful
+            if will_succeed:
+                # Generate random duration within range based on style
+                min_duration, max_duration = style_config["duration_range"]
+                actual_duration = random.randint(min_duration, max_duration)
+                
+                # Select random video and thumbnail URLs
+                video_url = random.choice(self._mock_video_urls)
+                thumbnail_url = random.choice(self._mock_thumbnail_urls)
+                
+                # Update status in cache
+                if video_id in self.video_status_cache:
+                    self.video_status_cache[video_id].status = "completed"
+                    self.video_status_cache[video_id].progress = 1.0
+                    self.video_status_cache[video_id].video_url = video_url
+                    self.video_status_cache[video_id].thumbnail_url = thumbnail_url
+                    self.video_status_cache[video_id].duration = actual_duration
+                
+                logger.info(f"Mock implementation: Video generation completed for {video_id}")
+            else:
+                # Mark as failed
+                if video_id in self.video_status_cache:
+                    self.video_status_cache[video_id].status = "failed"
+                    self.video_status_cache[video_id].error = "Mock error: Video generation failed"
+                logger.warning(f"Mock implementation: Video generation failed for {video_id}")
+        
+        except asyncio.CancelledError:
+            logger.info(f"Mock implementation: Video generation cancelled for {video_id}")
             if video_id in self.video_status_cache:
                 self.video_status_cache[video_id].status = "failed"
-                self.video_status_cache[video_id].error = str(e)
+                self.video_status_cache[video_id].error = "Generation cancelled"
+            raise
+        
+        except Exception as e:
+            logger.error(f"Mock implementation: Error in video generation for {video_id}: {str(e)}")
+            if video_id in self.video_status_cache:
+                self.video_status_cache[video_id].status = "failed"
+                self.video_status_cache[video_id].error = f"Error: {str(e)}"
+        
+        finally:
+            # Remove from active tasks
+            if video_id in self._active_tasks:
+                del self._active_tasks[video_id]
     
     async def get_video_status(self, video_id: str) -> VideoStatus:
         """
-        Get the status of a video generation task.
+        Mock implementation: Get the status of a video generation task.
         
         Args:
             video_id: ID of the video to check
@@ -484,125 +390,22 @@ class MiniMaxService:
         Returns:
             VideoStatus: Current status of the video
         """
-        # Check cache first
+        logger.info(f"Mock implementation: Getting status for video {video_id}")
+        
+        # Check if we have status in cache
         if video_id in self.video_status_cache:
-            cached_status = self.video_status_cache[video_id]
-            
-            # If already completed or failed, return cached status
-            if cached_status.status in ["completed", "failed"]:
-                return cached_status
+            return self.video_status_cache[video_id]
         
-        # Ensure MCP is running
-        if not await self.ensure_mcp_running():
-            raise RuntimeError("Failed to start MiniMax MCP")
-        
-        # Implement retry logic for API requests
-        for attempt in range(self.max_retries):
-            try:
-                # Send request to MCP
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(
-                        f"{self.mcp_base_url}/status/{video_id}",
-                        timeout=10
-                    )
-                    
-                if response.status_code != 200:
-                    logger.error(f"Error from MiniMax MCP: {response.status_code} - {response.text}")
-                    
-                    # Check if we should retry
-                    if attempt < self.max_retries - 1 and response.status_code >= 500:
-                        delay = self.retry_delay * (2 ** attempt)
-                        logger.info(f"Retrying in {delay} seconds (attempt {attempt + 1}/{self.max_retries})")
-                        await asyncio.sleep(delay)
-                        continue
-                    
-                    # Update cache with error
-                    if video_id in self.video_status_cache:
-                        self.video_status_cache[video_id].status = "failed"
-                        self.video_status_cache[video_id].error = f"MCP returned error: {response.status_code}"
-                    
-                    # Return current status
-                    return VideoStatus(
-                        video_id=video_id,
-                        status="failed",
-                        error=f"MCP returned error: {response.status_code}"
-                    )
-                
-                # Parse response
-                data = response.json()
-                
-                # Extract status information
-                status = data.get("status", "processing")
-                progress = data.get("progress", 0.0)
-                video_url = data.get("video_url")
-                thumbnail_url = data.get("thumbnail_url")
-                duration = data.get("duration")
-                error = data.get("error")
-                
-                # Create status object
-                video_status = VideoStatus(
-                    video_id=video_id,
-                    status=status,
-                    progress=progress,
-                    video_url=video_url,
-                    thumbnail_url=thumbnail_url,
-                    duration=duration,
-                    error=error
-                )
-                
-                # Update cache
-                self.video_status_cache[video_id] = video_status
-                
-                return video_status
-                
-            except httpx.RequestError as e:
-                logger.error(f"Request error when checking video status (attempt {attempt + 1}/{self.max_retries}): {str(e)}")
-                
-                # Check if we should retry
-                if attempt < self.max_retries - 1:
-                    delay = self.retry_delay * (2 ** attempt)
-                    logger.info(f"Retrying in {delay} seconds")
-                    await asyncio.sleep(delay)
-                    continue
-                
-                # Update cache with error
-                if video_id in self.video_status_cache:
-                    # Don't override status if already completed
-                    if self.video_status_cache[video_id].status != "completed":
-                        self.video_status_cache[video_id].error = f"Error communicating with MCP: {str(e)}"
-                
-                # Return current status from cache or create new failed status
-                return self.video_status_cache.get(
-                    video_id,
-                    VideoStatus(
-                        video_id=video_id,
-                        status="failed",
-                        error=f"Error communicating with MCP: {str(e)}"
-                    )
-                )
-                
-            except Exception as e:
-                logger.error(f"Error checking video status: {str(e)}", exc_info=True)
-                
-                # Update cache with error
-                if video_id in self.video_status_cache:
-                    # Don't override status if already completed
-                    if self.video_status_cache[video_id].status != "completed":
-                        self.video_status_cache[video_id].error = str(e)
-                
-                # Return current status from cache or create new failed status
-                return self.video_status_cache.get(
-                    video_id,
-                    VideoStatus(
-                        video_id=video_id,
-                        status="failed",
-                        error=str(e)
-                    )
-                )
+        # If not in cache, return not found status
+        return VideoStatus(
+            video_id=video_id,
+            status="failed",
+            error="Video not found"
+        )
     
     async def get_completed_video(self, video_id: str) -> Optional[Dict[str, Any]]:
         """
-        Get the details of a completed video.
+        Mock implementation: Get the details of a completed video.
         
         Args:
             video_id: ID of the video
@@ -610,11 +413,14 @@ class MiniMaxService:
         Returns:
             Optional[Dict[str, Any]]: Video details if completed, None otherwise
         """
+        # Get current status
         status = await self.get_video_status(video_id)
         
+        # Return None if not completed
         if status.status != "completed":
             return None
         
+        # Return video details
         return {
             "video_id": video_id,
             "video_url": status.video_url,
@@ -624,7 +430,17 @@ class MiniMaxService:
         }
     
     async def close(self):
-        """Close the service and terminate the MCP process."""
+        """Close the service and clean up resources."""
+        # Cancel any active generation tasks
+        for task_id, task in list(self._active_tasks.items()):
+            if not task.done():
+                task.cancel()
+        self._active_tasks.clear()
+        
+        # Clear status cache
+        self.video_status_cache.clear()
+        
+        # Keep the process cleanup code for future real implementation
         await self._cleanup_existing_process()
         
         # Remove PID file

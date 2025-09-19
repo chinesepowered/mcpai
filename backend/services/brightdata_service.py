@@ -5,8 +5,10 @@ import subprocess
 import signal
 import time
 import psutil
+import random
+import datetime
 from typing import List, Dict, Any, Optional
-import httpx
+import json
 from pydantic import BaseModel
 
 # Configure logging
@@ -30,6 +32,51 @@ class BrightDataService:
     _startup_lock = asyncio.Lock()
     _instance = None
     _pid_file = os.path.join(os.path.expanduser("~"), ".brightdata_mcp.pid")
+    
+    # Sample data for mock implementation
+    _mock_captions = [
+        "When your code works on the first try 😂 #programming #developer #techjokes",
+        "POV: You're explaining to your boss why AI won't replace you... yet. #tech #ai #worklife",
+        "This is what happens when you don't read the documentation 🤦‍♂️ #coding #developerlife",
+        "How it started vs how it's going: coding edition #programming #techhumor",
+        "Me debugging my code at 3am vs me explaining it in the morning standup #devlife",
+        "The face you make when someone asks if you can 'just add one small feature' #developerproblems",
+        "That moment when Stack Overflow goes down #panicmode #coding #developers",
+        "Expectation: Clean code. Reality: 500 if statements #codingmemes #programming",
+        "My brain after 10 hours of debugging #techlife #programming #needcoffee",
+        "When the client says 'it should be easy to implement' #developerlife #techmemes",
+        "How non-technical people imagine coding vs how it actually is #programming #reality",
+        "The code I wrote 6 months ago vs me trying to understand it now #developerproblems",
+        "When you fix one bug but create three more #coding #bugfixing #techhumor",
+        "Explaining technical debt to management be like... #programming #techmanagement",
+        "My productivity graph throughout the day #developerlife #programming"
+    ]
+    
+    _mock_image_urls = [
+        "https://picsum.photos/id/1/800/800",
+        "https://picsum.photos/id/20/800/800",
+        "https://picsum.photos/id/30/800/800",
+        "https://picsum.photos/id/40/800/800",
+        "https://picsum.photos/id/50/800/800",
+        "https://picsum.photos/id/60/800/800",
+        "https://picsum.photos/id/70/800/800",
+        "https://picsum.photos/id/80/800/800",
+        "https://picsum.photos/id/90/800/800",
+        "https://picsum.photos/id/100/800/800",
+        "https://picsum.photos/id/110/800/800",
+        "https://picsum.photos/id/120/800/800",
+        "https://picsum.photos/id/130/800/800",
+        "https://picsum.photos/id/140/800/800",
+        "https://picsum.photos/id/150/800/800"
+    ]
+    
+    _mock_video_urls = [
+        "https://example.com/videos/sample1.mp4",
+        "https://example.com/videos/sample2.mp4",
+        "https://example.com/videos/sample3.mp4",
+        "https://example.com/videos/sample4.mp4",
+        "https://example.com/videos/sample5.mp4"
+    ]
     
     def __new__(cls, *args, **kwargs):
         """Implement singleton pattern to ensure only one service instance exists."""
@@ -55,8 +102,6 @@ class BrightDataService:
         # MCP process management
         self.mcp_process = None
         self.mcp_pid = None
-        self.mcp_port = 8191  # Default MCP port
-        self.mcp_base_url = f"http://localhost:{self.mcp_port}"
         
         # Timeout and retry settings
         self.startup_timeout = 30  # seconds
@@ -67,6 +112,9 @@ class BrightDataService:
         # Health check settings
         self.health_check_interval = 60  # seconds
         self.last_health_check = 0
+        
+        # Cache for mock data
+        self._mock_data_cache = {}
         
         # Mark as initialized
         self.initialized = True
@@ -105,184 +153,51 @@ class BrightDataService:
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             return False
     
-    async def _check_mcp_health(self) -> bool:
-        """Check if the MCP server is healthy and responsive."""
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{self.mcp_base_url}/status",
-                    timeout=5
-                )
-            return response.status_code == 200
-        except (httpx.RequestError, asyncio.TimeoutError):
-            return False
-    
     async def ensure_mcp_running(self) -> bool:
         """
         Ensure that the Bright Data MCP is running.
         Uses a lock to prevent concurrent startup attempts.
         
+        For mock implementation, always returns True.
+        
         Returns:
             bool: True if MCP is running, False otherwise.
         """
-        # First check if we need to do a health check
-        current_time = time.time()
-        if self.mcp_pid and (current_time - self.last_health_check) > self.health_check_interval:
-            self.last_health_check = current_time
-            
-            # Check if process is still running and healthy
-            if not self._is_process_running(self.mcp_pid) or not await self._check_mcp_health():
-                logger.warning(f"Bright Data MCP (PID: {self.mcp_pid}) is not responsive, will restart")
-                self.mcp_pid = None
-                # Clean up PID file
-                if os.path.exists(self._pid_file):
-                    os.unlink(self._pid_file)
-        
-        # If we have a valid PID, check if it's responsive
-        if self.mcp_pid:
-            try:
-                # Verify MCP is responsive
-                if await self._check_mcp_health():
-                    return True
-                logger.warning(f"Bright Data MCP (PID: {self.mcp_pid}) is not responsive, will restart")
-                self.mcp_pid = None
-            except Exception as e:
-                logger.warning(f"Error checking Bright Data MCP health: {str(e)}")
-                self.mcp_pid = None
-        
-        # Acquire lock to prevent concurrent startup attempts
-        async with self._startup_lock:
-            # Double-check if another thread started the process while we were waiting
-            if self.mcp_pid and await self._check_mcp_health():
-                return True
-            
-            # Start MCP if not running or not responsive
-            return await self._start_mcp()
+        # For mock implementation, we'll just return True
+        # This keeps the API compatible with the real implementation
+        logger.info("Mock implementation: MCP considered running")
+        return True
     
     async def _start_mcp(self) -> bool:
         """
         Start the Bright Data MCP process.
         
+        For mock implementation, always returns True.
+        
         Returns:
             bool: True if MCP started successfully, False otherwise.
         """
-        logger.info("Starting Bright Data MCP")
-        
-        # Kill existing process if it exists
-        await self._cleanup_existing_process()
-        
-        # Start new process
-        env = os.environ.copy()
-        env["API_TOKEN"] = self.api_token
-        
-        try:
-            self.mcp_process = subprocess.Popen(
-                ["npx", "@brightdata/mcp"],
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                preexec_fn=os.setsid  # Use process group for better cleanup
-            )
-            self.mcp_pid = self.mcp_process.pid
-            logger.info(f"Bright Data MCP started with PID {self.mcp_pid}")
-            
-            # Save PID to file
-            with open(self._pid_file, 'w') as f:
-                f.write(str(self.mcp_pid))
-            
-            # Wait for MCP to be ready with retries
-            success = await self._wait_for_mcp_ready()
-            
-            if not success:
-                # Cleanup on failure
-                await self._cleanup_existing_process()
-                if os.path.exists(self._pid_file):
-                    os.unlink(self._pid_file)
-                return False
-                
-            return True
-        except Exception as e:
-            logger.error(f"Failed to start Bright Data MCP: {str(e)}")
-            # Cleanup on error
-            await self._cleanup_existing_process()
-            if os.path.exists(self._pid_file):
-                os.unlink(self._pid_file)
-            return False
+        # For mock implementation, we'll just return True
+        logger.info("Mock implementation: MCP considered started")
+        return True
     
     async def _wait_for_mcp_ready(self) -> bool:
-        """Wait for MCP to be ready with exponential backoff retries."""
-        start_time = asyncio.get_event_loop().time()
-        retry_count = 0
+        """
+        Wait for MCP to be ready by monitoring process output.
         
-        while asyncio.get_event_loop().time() - start_time < self.startup_timeout:
-            try:
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(
-                        f"{self.mcp_base_url}/status",
-                        timeout=5
-                    )
-                if response.status_code == 200:
-                    logger.info("Bright Data MCP is ready")
-                    return True
-            except (httpx.RequestError, asyncio.TimeoutError):
-                # Check if process is still running
-                if self.mcp_process and self.mcp_process.poll() is not None:
-                    logger.error("Bright Data MCP process terminated unexpectedly")
-                    return False
-                
-                # Calculate backoff delay
-                retry_count += 1
-                delay = min(self.retry_delay * (2 ** (retry_count - 1)), 10)
-                logger.debug(f"MCP not ready yet, retrying in {delay} seconds (attempt {retry_count})")
-                await asyncio.sleep(delay)
-        
-        logger.error("Timed out waiting for Bright Data MCP to start")
-        return False
+        For mock implementation, always returns True.
+        """
+        # For mock implementation, we'll just return True
+        return True
+    
+    async def _read_process_output(self, stream):
+        """Read output from process stream until a relevant line is found."""
+        # For mock implementation, we'll just return an empty string
+        return ""
     
     async def _cleanup_existing_process(self):
         """Clean up existing MCP process with proper signal handling."""
-        # First try to terminate the process we started
-        if self.mcp_process and self.mcp_process.poll() is None:
-            try:
-                logger.info(f"Terminating Bright Data MCP process (PID: {self.mcp_process.pid})")
-                # Try graceful termination first
-                self.mcp_process.terminate()
-                
-                # Wait for process to terminate
-                for _ in range(5):  # Wait up to 5 seconds
-                    if self.mcp_process.poll() is not None:
-                        break
-                    await asyncio.sleep(1)
-                
-                # Force kill if still running
-                if self.mcp_process.poll() is None:
-                    logger.warning(f"Force killing Bright Data MCP process (PID: {self.mcp_process.pid})")
-                    self.mcp_process.kill()
-            except Exception as e:
-                logger.error(f"Error terminating Bright Data MCP process: {str(e)}")
-        
-        # Also try to terminate by PID (in case we restored from PID file)
-        if self.mcp_pid and self._is_process_running(self.mcp_pid):
-            try:
-                logger.info(f"Terminating Bright Data MCP by PID: {self.mcp_pid}")
-                # Try to kill the process group
-                os.killpg(os.getpgid(self.mcp_pid), signal.SIGTERM)
-                
-                # Wait for process to terminate
-                for _ in range(5):  # Wait up to 5 seconds
-                    if not self._is_process_running(self.mcp_pid):
-                        break
-                    await asyncio.sleep(1)
-                
-                # Force kill if still running
-                if self._is_process_running(self.mcp_pid):
-                    logger.warning(f"Force killing Bright Data MCP by PID: {self.mcp_pid}")
-                    os.killpg(os.getpgid(self.mcp_pid), signal.SIGKILL)
-            except Exception as e:
-                logger.error(f"Error terminating Bright Data MCP by PID: {str(e)}")
-        
-        # Reset process tracking
+        # For mock implementation, we'll just reset the process tracking
         self.mcp_process = None
         self.mcp_pid = None
     
@@ -292,96 +207,79 @@ class BrightDataService:
         limit: int = 10
     ) -> List[InstagramPost]:
         """
-        Scrape Instagram posts from a specific user.
+        Mock implementation: Generate realistic-looking Instagram posts.
         
         Args:
             username: Instagram username to scrape
             limit: Maximum number of posts to return
             
         Returns:
-            List[InstagramPost]: List of Instagram posts
+            List[InstagramPost]: List of mock Instagram posts
         """
-        # Ensure MCP is running
-        if not await self.ensure_mcp_running():
-            raise RuntimeError("Failed to start Bright Data MCP")
+        logger.info(f"Mock scraping Instagram posts for user: {username}")
         
-        logger.info(f"Scraping Instagram posts for user: {username}")
+        # Simulate network delay
+        await asyncio.sleep(1.5)
         
-        # Prepare the request payload
-        payload = {
-            "url": f"https://www.instagram.com/{username}/",
-            "country": "us",
-            "collect": {
-                "posts": {
-                    "limit": limit,
-                    "fields": [
-                        "id",
-                        "shortcode",
-                        "caption",
-                        "display_url",
-                        "video_url",
-                        "taken_at_timestamp",
-                        "edge_media_preview_like.count",
-                        "edge_media_to_comment.count"
-                    ]
-                },
-                "user": {
-                    "fields": [
-                        "id",
-                        "username",
-                        "full_name",
-                        "biography",
-                        "edge_followed_by.count",
-                        "edge_follow.count"
-                    ]
-                }
-            }
-        }
+        # Check if we have cached data for this user and limit
+        cache_key = f"{username}_{limit}"
+        if cache_key in self._mock_data_cache:
+            logger.info(f"Returning cached mock data for {username}")
+            return self._mock_data_cache[cache_key]
         
-        # Implement retry logic for API requests
-        for attempt in range(self.max_retries):
-            try:
-                # Send request to MCP
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        f"{self.mcp_base_url}/instagram",
-                        json=payload,
-                        timeout=self.request_timeout
-                    )
-                    
-                if response.status_code != 200:
-                    logger.error(f"Error from Bright Data MCP: {response.status_code} - {response.text}")
-                    
-                    # Check if we should retry
-                    if attempt < self.max_retries - 1 and response.status_code >= 500:
-                        delay = self.retry_delay * (2 ** attempt)
-                        logger.info(f"Retrying in {delay} seconds (attempt {attempt + 1}/{self.max_retries})")
-                        await asyncio.sleep(delay)
-                        continue
-                    
-                    raise RuntimeError(f"Bright Data MCP returned error: {response.status_code}")
-                
-                # Parse response
-                data = response.json()
-                
-                # Transform to InstagramPost model
-                return self._transform_instagram_data(data, username, limit)
+        # Generate mock posts
+        posts = []
+        follower_count = random.randint(10000, 500000)  # Random follower count
+        
+        for i in range(limit):
+            # Generate unique post ID
+            post_id = f"post_{username}_{int(time.time())}_{i}"
             
-            except httpx.RequestError as e:
-                logger.error(f"Request error when scraping Instagram (attempt {attempt + 1}/{self.max_retries}): {str(e)}")
-                
-                # Check if we should retry
-                if attempt < self.max_retries - 1:
-                    delay = self.retry_delay * (2 ** attempt)
-                    logger.info(f"Retrying in {delay} seconds")
-                    await asyncio.sleep(delay)
-                    continue
-                
-                raise RuntimeError(f"Error communicating with Bright Data MCP: {str(e)}")
+            # Select random caption
+            caption = random.choice(self._mock_captions)
             
-            except Exception as e:
-                logger.error(f"Error scraping Instagram: {str(e)}", exc_info=True)
-                raise RuntimeError(f"Error scraping Instagram: {str(e)}")
+            # Select random image URL
+            image_url = random.choice(self._mock_image_urls)
+            
+            # Randomly decide if it's a video post
+            has_video = random.random() < 0.3  # 30% chance of being a video
+            video_url = random.choice(self._mock_video_urls) if has_video else None
+            
+            # Generate engagement metrics
+            likes = random.randint(1000, 50000)
+            comments = random.randint(50, 2000)
+            
+            # Calculate engagement rate
+            engagement_rate = round((likes + comments) / follower_count * 100, 2)
+            
+            # Generate timestamp (random time within the last 30 days)
+            days_ago = random.randint(0, 30)
+            hours_ago = random.randint(0, 23)
+            minutes_ago = random.randint(0, 59)
+            post_time = datetime.datetime.now() - datetime.timedelta(days=days_ago, hours=hours_ago, minutes=minutes_ago)
+            timestamp = post_time.isoformat()
+            
+            # Create InstagramPost
+            post = InstagramPost(
+                id=post_id,
+                caption=caption,
+                image_url=image_url,
+                video_url=video_url,
+                likes=likes,
+                comments=comments,
+                engagement_rate=engagement_rate,
+                timestamp=timestamp
+            )
+            posts.append(post)
+        
+        # Sort by timestamp (newest first)
+        posts.sort(key=lambda x: x.timestamp or "", reverse=True)
+        
+        # Cache the results
+        self._mock_data_cache[cache_key] = posts
+        
+        logger.info(f"Generated {len(posts)} mock Instagram posts for {username}")
+        return posts
     
     def _transform_instagram_data(
         self, 
@@ -392,6 +290,8 @@ class BrightDataService:
         """
         Transform raw Instagram data from Bright Data MCP to InstagramPost models.
         
+        This method is kept for API compatibility but not used in mock implementation.
+        
         Args:
             data: Raw data from Bright Data MCP
             username: Instagram username
@@ -400,65 +300,15 @@ class BrightDataService:
         Returns:
             List[InstagramPost]: List of Instagram posts
         """
-        posts = []
-        
-        try:
-            # Extract user data for engagement calculation
-            user_data = data.get("user", {})
-            follower_count = user_data.get("edge_followed_by", {}).get("count", 0)
-            
-            # Extract posts
-            raw_posts = data.get("posts", [])
-            
-            for post in raw_posts[:limit]:
-                try:
-                    # Extract post data
-                    post_id = post.get("id") or post.get("shortcode", f"unknown_{len(posts)}")
-                    caption = post.get("caption", "")
-                    image_url = post.get("display_url", "")
-                    video_url = post.get("video_url")
-                    
-                    # Extract engagement metrics
-                    likes = post.get("edge_media_preview_like", {}).get("count", 0)
-                    comments = post.get("edge_media_to_comment", {}).get("count", 0)
-                    
-                    # Calculate engagement rate if follower count is available
-                    engagement_rate = None
-                    if follower_count > 0:
-                        engagement_rate = round((likes + comments) / follower_count * 100, 2)
-                    
-                    # Extract timestamp
-                    timestamp = None
-                    if "taken_at_timestamp" in post:
-                        from datetime import datetime
-                        timestamp_value = post.get("taken_at_timestamp")
-                        if isinstance(timestamp_value, (int, float)):
-                            timestamp = datetime.fromtimestamp(timestamp_value).isoformat()
-                    
-                    # Create InstagramPost
-                    instagram_post = InstagramPost(
-                        id=post_id,
-                        caption=caption,
-                        image_url=image_url,
-                        video_url=video_url,
-                        likes=likes,
-                        comments=comments,
-                        engagement_rate=engagement_rate,
-                        timestamp=timestamp
-                    )
-                    posts.append(instagram_post)
-                except Exception as e:
-                    logger.warning(f"Error processing Instagram post: {str(e)}")
-            
-            logger.info(f"Successfully processed {len(posts)} Instagram posts for {username}")
-            return posts
-        except Exception as e:
-            logger.error(f"Error transforming Instagram data: {str(e)}", exc_info=True)
-            # Return whatever posts were successfully processed
-            return posts
+        # This method is kept for API compatibility but not used in mock implementation
+        return []
     
     async def close(self):
         """Close the service and terminate the MCP process."""
+        # For mock implementation, just clean up any resources
+        self._mock_data_cache = {}
+        
+        # Keep the process cleanup code for future real implementation
         await self._cleanup_existing_process()
         
         # Remove PID file
