@@ -141,7 +141,11 @@ class MiniMaxService:
         payload = {
             "model": "MiniMax-Hailuo-02",  # Use the latest video model
             "prompt": request.caption,
-            "duration": request.duration,
+            # MiniMax video API currently supports only 6 s and 10 s clips.
+            # To keep turnaround fast (better UX for viral content) we default
+            # to 6 seconds regardless of the requested duration.
+            # TODO: expose 6 / 10 s choice to the frontend if needed.
+            "duration": 6,
             # 768P is the default / recommended resolution per docs
             "resolution": "768P",
             "aigc_watermark": False  # No watermark for viral marketing
