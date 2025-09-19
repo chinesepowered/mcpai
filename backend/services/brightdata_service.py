@@ -2,6 +2,9 @@ import os
 import logging
 import asyncio
 import subprocess
+import signal
+import time
+import psutil
 from typing import List, Dict, Any, Optional
 import httpx
 from pydantic import BaseModel
@@ -23,6 +26,17 @@ class InstagramPost(BaseModel):
 class BrightDataService:
     """Service for interacting with Bright Data MCP to scrape Instagram content."""
     
+    # Class-level lock to prevent concurrent MCP startup attempts
+    _startup_lock = asyncio.Lock()
+    _instance = None
+    _pid_file = os.path.join(os.path.expanduser("~"), ".brightdata_mcp.pid")
+    
+    def __new__(cls, *args, **kwargs):
+        """Implement singleton pattern to ensure only one service instance exists."""
+        if cls._instance is None:
+            cls._instance = super(BrightDataService, cls).__new__(cls)
+        return cls._instance
+    
     def __init__(self, api_token: Optional[str] = None):
         """
         Initialize the Bright Data service.
@@ -30,43 +44,120 @@ class BrightDataService:
         Args:
             api_token: Bright Data API token. If not provided, will be loaded from environment.
         """
+        # Only initialize once (singleton pattern)
+        if hasattr(self, 'initialized') and self.initialized:
+            return
+            
         self.api_token = api_token or os.getenv("BRIGHTDATA_API_TOKEN")
         if not self.api_token:
             raise ValueError("Bright Data API token not provided and not found in environment")
         
         # MCP process management
         self.mcp_process = None
+        self.mcp_pid = None
         self.mcp_port = 8191  # Default MCP port
         self.mcp_base_url = f"http://localhost:{self.mcp_port}"
         
-        # Timeout settings
+        # Timeout and retry settings
         self.startup_timeout = 30  # seconds
         self.request_timeout = 60  # seconds
+        self.max_retries = 3
+        self.retry_delay = 2  # seconds
+        
+        # Health check settings
+        self.health_check_interval = 60  # seconds
+        self.last_health_check = 0
+        
+        # Mark as initialized
+        self.initialized = True
+        
+        # Try to restore existing process if PID file exists
+        self._restore_from_pid_file()
+    
+    def _restore_from_pid_file(self):
+        """Attempt to restore MCP process from PID file if it exists."""
+        try:
+            if os.path.exists(self._pid_file):
+                with open(self._pid_file, 'r') as f:
+                    pid = int(f.read().strip())
+                
+                # Check if process is running
+                if self._is_process_running(pid):
+                    logger.info(f"Restored Bright Data MCP process from PID file: {pid}")
+                    self.mcp_pid = pid
+                else:
+                    logger.info(f"Found stale PID file for Bright Data MCP: {pid}")
+                    os.unlink(self._pid_file)
+        except Exception as e:
+            logger.warning(f"Error restoring from PID file: {str(e)}")
+            # Remove potentially corrupted PID file
+            if os.path.exists(self._pid_file):
+                os.unlink(self._pid_file)
+    
+    def _is_process_running(self, pid: int) -> bool:
+        """Check if a process with the given PID is running."""
+        try:
+            process = psutil.Process(pid)
+            # Check if it's actually our MCP process
+            if "brightdata" in " ".join(process.cmdline()).lower() or "@brightdata/mcp" in " ".join(process.cmdline()).lower():
+                return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+            return False
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            return False
+    
+    async def _check_mcp_health(self) -> bool:
+        """Check if the MCP server is healthy and responsive."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.mcp_base_url}/status",
+                    timeout=5
+                )
+            return response.status_code == 200
+        except (httpx.RequestError, asyncio.TimeoutError):
+            return False
     
     async def ensure_mcp_running(self) -> bool:
         """
         Ensure that the Bright Data MCP is running.
+        Uses a lock to prevent concurrent startup attempts.
         
         Returns:
             bool: True if MCP is running, False otherwise.
         """
-        # Check if process is already running
-        if self.mcp_process and self.mcp_process.poll() is None:
+        # First check if we need to do a health check
+        current_time = time.time()
+        if self.mcp_pid and (current_time - self.last_health_check) > self.health_check_interval:
+            self.last_health_check = current_time
+            
+            # Check if process is still running and healthy
+            if not self._is_process_running(self.mcp_pid) or not await self._check_mcp_health():
+                logger.warning(f"Bright Data MCP (PID: {self.mcp_pid}) is not responsive, will restart")
+                self.mcp_pid = None
+                # Clean up PID file
+                if os.path.exists(self._pid_file):
+                    os.unlink(self._pid_file)
+        
+        # If we have a valid PID, check if it's responsive
+        if self.mcp_pid:
             try:
                 # Verify MCP is responsive
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(
-                        f"{self.mcp_base_url}/status",
-                        timeout=5
-                    )
-                if response.status_code == 200:
-                    logger.info("Bright Data MCP is already running")
+                if await self._check_mcp_health():
                     return True
-            except (httpx.RequestError, asyncio.TimeoutError):
-                logger.warning("Bright Data MCP is running but not responsive")
+                logger.warning(f"Bright Data MCP (PID: {self.mcp_pid}) is not responsive, will restart")
+                self.mcp_pid = None
+            except Exception as e:
+                logger.warning(f"Error checking Bright Data MCP health: {str(e)}")
+                self.mcp_pid = None
         
-        # Start MCP if not running or not responsive
-        return await self._start_mcp()
+        # Acquire lock to prevent concurrent startup attempts
+        async with self._startup_lock:
+            # Double-check if another thread started the process while we were waiting
+            if self.mcp_pid and await self._check_mcp_health():
+                return True
+            
+            # Start MCP if not running or not responsive
+            return await self._start_mcp()
     
     async def _start_mcp(self) -> bool:
         """
@@ -78,14 +169,7 @@ class BrightDataService:
         logger.info("Starting Bright Data MCP")
         
         # Kill existing process if it exists
-        if self.mcp_process:
-            try:
-                self.mcp_process.terminate()
-                await asyncio.sleep(1)
-                if self.mcp_process.poll() is None:
-                    self.mcp_process.kill()
-            except Exception as e:
-                logger.error(f"Error terminating existing MCP process: {str(e)}")
+        await self._cleanup_existing_process()
         
         # Start new process
         env = os.environ.copy()
@@ -98,29 +182,109 @@ class BrightDataService:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                preexec_fn=os.setsid  # Use process group for better cleanup
             )
-            logger.info(f"Bright Data MCP started with PID {self.mcp_process.pid}")
+            self.mcp_pid = self.mcp_process.pid
+            logger.info(f"Bright Data MCP started with PID {self.mcp_pid}")
             
-            # Wait for MCP to be ready
-            start_time = asyncio.get_event_loop().time()
-            while asyncio.get_event_loop().time() - start_time < self.startup_timeout:
-                try:
-                    async with httpx.AsyncClient() as client:
-                        response = await client.get(
-                            f"{self.mcp_base_url}/status",
-                            timeout=5
-                        )
-                    if response.status_code == 200:
-                        logger.info("Bright Data MCP is ready")
-                        return True
-                except (httpx.RequestError, asyncio.TimeoutError):
-                    await asyncio.sleep(1)
+            # Save PID to file
+            with open(self._pid_file, 'w') as f:
+                f.write(str(self.mcp_pid))
             
-            logger.error("Timed out waiting for Bright Data MCP to start")
-            return False
+            # Wait for MCP to be ready with retries
+            success = await self._wait_for_mcp_ready()
+            
+            if not success:
+                # Cleanup on failure
+                await self._cleanup_existing_process()
+                if os.path.exists(self._pid_file):
+                    os.unlink(self._pid_file)
+                return False
+                
+            return True
         except Exception as e:
             logger.error(f"Failed to start Bright Data MCP: {str(e)}")
+            # Cleanup on error
+            await self._cleanup_existing_process()
+            if os.path.exists(self._pid_file):
+                os.unlink(self._pid_file)
             return False
+    
+    async def _wait_for_mcp_ready(self) -> bool:
+        """Wait for MCP to be ready with exponential backoff retries."""
+        start_time = asyncio.get_event_loop().time()
+        retry_count = 0
+        
+        while asyncio.get_event_loop().time() - start_time < self.startup_timeout:
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        f"{self.mcp_base_url}/status",
+                        timeout=5
+                    )
+                if response.status_code == 200:
+                    logger.info("Bright Data MCP is ready")
+                    return True
+            except (httpx.RequestError, asyncio.TimeoutError):
+                # Check if process is still running
+                if self.mcp_process and self.mcp_process.poll() is not None:
+                    logger.error("Bright Data MCP process terminated unexpectedly")
+                    return False
+                
+                # Calculate backoff delay
+                retry_count += 1
+                delay = min(self.retry_delay * (2 ** (retry_count - 1)), 10)
+                logger.debug(f"MCP not ready yet, retrying in {delay} seconds (attempt {retry_count})")
+                await asyncio.sleep(delay)
+        
+        logger.error("Timed out waiting for Bright Data MCP to start")
+        return False
+    
+    async def _cleanup_existing_process(self):
+        """Clean up existing MCP process with proper signal handling."""
+        # First try to terminate the process we started
+        if self.mcp_process and self.mcp_process.poll() is None:
+            try:
+                logger.info(f"Terminating Bright Data MCP process (PID: {self.mcp_process.pid})")
+                # Try graceful termination first
+                self.mcp_process.terminate()
+                
+                # Wait for process to terminate
+                for _ in range(5):  # Wait up to 5 seconds
+                    if self.mcp_process.poll() is not None:
+                        break
+                    await asyncio.sleep(1)
+                
+                # Force kill if still running
+                if self.mcp_process.poll() is None:
+                    logger.warning(f"Force killing Bright Data MCP process (PID: {self.mcp_process.pid})")
+                    self.mcp_process.kill()
+            except Exception as e:
+                logger.error(f"Error terminating Bright Data MCP process: {str(e)}")
+        
+        # Also try to terminate by PID (in case we restored from PID file)
+        if self.mcp_pid and self._is_process_running(self.mcp_pid):
+            try:
+                logger.info(f"Terminating Bright Data MCP by PID: {self.mcp_pid}")
+                # Try to kill the process group
+                os.killpg(os.getpgid(self.mcp_pid), signal.SIGTERM)
+                
+                # Wait for process to terminate
+                for _ in range(5):  # Wait up to 5 seconds
+                    if not self._is_process_running(self.mcp_pid):
+                        break
+                    await asyncio.sleep(1)
+                
+                # Force kill if still running
+                if self._is_process_running(self.mcp_pid):
+                    logger.warning(f"Force killing Bright Data MCP by PID: {self.mcp_pid}")
+                    os.killpg(os.getpgid(self.mcp_pid), signal.SIGKILL)
+            except Exception as e:
+                logger.error(f"Error terminating Bright Data MCP by PID: {str(e)}")
+        
+        # Reset process tracking
+        self.mcp_process = None
+        self.mcp_pid = None
     
     async def scrape_instagram_user(
         self, 
@@ -174,30 +338,50 @@ class BrightDataService:
             }
         }
         
-        try:
-            # Send request to MCP
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.mcp_base_url}/instagram",
-                    json=payload,
-                    timeout=self.request_timeout
-                )
+        # Implement retry logic for API requests
+        for attempt in range(self.max_retries):
+            try:
+                # Send request to MCP
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{self.mcp_base_url}/instagram",
+                        json=payload,
+                        timeout=self.request_timeout
+                    )
+                    
+                if response.status_code != 200:
+                    logger.error(f"Error from Bright Data MCP: {response.status_code} - {response.text}")
+                    
+                    # Check if we should retry
+                    if attempt < self.max_retries - 1 and response.status_code >= 500:
+                        delay = self.retry_delay * (2 ** attempt)
+                        logger.info(f"Retrying in {delay} seconds (attempt {attempt + 1}/{self.max_retries})")
+                        await asyncio.sleep(delay)
+                        continue
+                    
+                    raise RuntimeError(f"Bright Data MCP returned error: {response.status_code}")
                 
-            if response.status_code != 200:
-                logger.error(f"Error from Bright Data MCP: {response.status_code} - {response.text}")
-                raise RuntimeError(f"Bright Data MCP returned error: {response.status_code}")
+                # Parse response
+                data = response.json()
+                
+                # Transform to InstagramPost model
+                return self._transform_instagram_data(data, username, limit)
             
-            # Parse response
-            data = response.json()
+            except httpx.RequestError as e:
+                logger.error(f"Request error when scraping Instagram (attempt {attempt + 1}/{self.max_retries}): {str(e)}")
+                
+                # Check if we should retry
+                if attempt < self.max_retries - 1:
+                    delay = self.retry_delay * (2 ** attempt)
+                    logger.info(f"Retrying in {delay} seconds")
+                    await asyncio.sleep(delay)
+                    continue
+                
+                raise RuntimeError(f"Error communicating with Bright Data MCP: {str(e)}")
             
-            # Transform to InstagramPost model
-            return self._transform_instagram_data(data, username, limit)
-        except httpx.RequestError as e:
-            logger.error(f"Request error when scraping Instagram: {str(e)}")
-            raise RuntimeError(f"Error communicating with Bright Data MCP: {str(e)}")
-        except Exception as e:
-            logger.error(f"Error scraping Instagram: {str(e)}", exc_info=True)
-            raise RuntimeError(f"Error scraping Instagram: {str(e)}")
+            except Exception as e:
+                logger.error(f"Error scraping Instagram: {str(e)}", exc_info=True)
+                raise RuntimeError(f"Error scraping Instagram: {str(e)}")
     
     def _transform_instagram_data(
         self, 
@@ -275,13 +459,11 @@ class BrightDataService:
     
     async def close(self):
         """Close the service and terminate the MCP process."""
-        if self.mcp_process and self.mcp_process.poll() is None:
-            logger.info(f"Terminating Bright Data MCP (PID: {self.mcp_process.pid})")
+        await self._cleanup_existing_process()
+        
+        # Remove PID file
+        if os.path.exists(self._pid_file):
             try:
-                self.mcp_process.terminate()
-                await asyncio.sleep(2)
-                if self.mcp_process.poll() is None:
-                    logger.warning(f"Force killing Bright Data MCP (PID: {self.mcp_process.pid})")
-                    self.mcp_process.kill()
+                os.unlink(self._pid_file)
             except Exception as e:
-                logger.error(f"Error terminating Bright Data MCP: {str(e)}")
+                logger.error(f"Error removing PID file: {str(e)}")

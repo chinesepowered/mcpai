@@ -1,6 +1,7 @@
 import os
 import logging
-from typing import List, Optional
+import asyncio
+from typing import List, Optional, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Depends, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -82,10 +83,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Service instances
+# Service instances and initialization lock
 brightdata_service: Optional[BrightDataService] = None
 minimax_service: Optional[MiniMaxService] = None
 apify_service: Optional[ApifyService] = None
+init_lock = asyncio.Lock()
+services_initialized = False
+service_errors: Dict[str, str] = {}
 
 # Error handling middleware
 @app.exception_handler(RequestValidationError)
@@ -106,27 +110,46 @@ async def generic_exception_handler(request: Request, exc: Exception):
 # Health check endpoint
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "message": "API is running"}
+    health_status = {
+        "status": "ok", 
+        "message": "API is running",
+        "services": {
+            "brightdata": "initialized" if brightdata_service else "not_initialized",
+            "minimax": "initialized" if minimax_service else "not_initialized",
+            "apify": "initialized" if apify_service else "not_initialized"
+        }
+    }
+    
+    # Add error information if any services failed to initialize
+    if service_errors:
+        health_status["service_errors"] = service_errors
+        health_status["status"] = "degraded"
+    
+    return health_status
 
-# Service initialization and dependency
+# Service dependencies - these now just return the already initialized services
 async def get_brightdata_service() -> BrightDataService:
-    global brightdata_service
-    if brightdata_service is None:
-        brightdata_service = BrightDataService()
-        await brightdata_service.ensure_mcp_running()
+    if not brightdata_service:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Bright Data service not initialized. Check server logs for details."
+        )
     return brightdata_service
 
 async def get_minimax_service() -> MiniMaxService:
-    global minimax_service
-    if minimax_service is None:
-        minimax_service = MiniMaxService()
-        await minimax_service.ensure_mcp_running()
+    if not minimax_service:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="MiniMax service not initialized. Check server logs for details."
+        )
     return minimax_service
 
 async def get_apify_service() -> ApifyService:
-    global apify_service
-    if apify_service is None:
-        apify_service = ApifyService()
+    if not apify_service:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Apify service not initialized. Check server logs for details."
+        )
     return apify_service
 
 # Instagram content scraping endpoints
@@ -250,26 +273,131 @@ async def get_video(
             detail=f"Error getting video: {str(e)}",
         )
 
+# MCP status endpoint
+@app.get("/api/mcp-status")
+async def get_mcp_status():
+    """
+    Get status of MCP servers
+    """
+    status_info = {
+        "brightdata": {
+            "initialized": brightdata_service is not None,
+            "error": service_errors.get("brightdata")
+        },
+        "minimax": {
+            "initialized": minimax_service is not None,
+            "error": service_errors.get("minimax")
+        }
+    }
+    
+    # Check if MCPs are running
+    if brightdata_service:
+        try:
+            is_running = await brightdata_service.ensure_mcp_running()
+            status_info["brightdata"]["running"] = is_running
+        except Exception as e:
+            status_info["brightdata"]["running"] = False
+            status_info["brightdata"]["error"] = str(e)
+    
+    if minimax_service:
+        try:
+            is_running = await minimax_service.ensure_mcp_running()
+            status_info["minimax"]["running"] = is_running
+        except Exception as e:
+            status_info["minimax"]["running"] = False
+            status_info["minimax"]["error"] = str(e)
+    
+    return status_info
+
+# Initialize services function
+async def initialize_services():
+    """
+    Initialize all services with proper error handling.
+    This is called only once during startup.
+    """
+    global brightdata_service, minimax_service, apify_service, services_initialized, service_errors
+    
+    # Use a lock to prevent concurrent initialization
+    async with init_lock:
+        if services_initialized:
+            return
+        
+        # Initialize Bright Data service
+        try:
+            logger.info("Initializing Bright Data service")
+            brightdata_service = BrightDataService()
+            # Don't wait for MCP to start here, just create the service
+        except Exception as e:
+            logger.error(f"Failed to initialize Bright Data service: {str(e)}", exc_info=True)
+            service_errors["brightdata"] = str(e)
+        
+        # Initialize MiniMax service
+        try:
+            logger.info("Initializing MiniMax service")
+            minimax_service = MiniMaxService()
+            # Don't wait for MCP to start here, just create the service
+        except Exception as e:
+            logger.error(f"Failed to initialize MiniMax service: {str(e)}", exc_info=True)
+            service_errors["minimax"] = str(e)
+        
+        # Initialize Apify service
+        try:
+            logger.info("Initializing Apify service")
+            apify_service = ApifyService()
+        except Exception as e:
+            logger.error(f"Failed to initialize Apify service: {str(e)}", exc_info=True)
+            service_errors["apify"] = str(e)
+        
+        services_initialized = True
+    
+    # Start MCP processes in background tasks to avoid blocking startup
+    if brightdata_service:
+        asyncio.create_task(start_brightdata_mcp())
+    
+    if minimax_service:
+        asyncio.create_task(start_minimax_mcp())
+
+async def start_brightdata_mcp():
+    """Start Bright Data MCP in a background task"""
+    global service_errors
+    try:
+        logger.info("Starting Bright Data MCP")
+        success = await brightdata_service.ensure_mcp_running()
+        if not success:
+            service_errors["brightdata"] = "Failed to start Bright Data MCP"
+            logger.error("Failed to start Bright Data MCP")
+    except Exception as e:
+        service_errors["brightdata"] = str(e)
+        logger.error(f"Error starting Bright Data MCP: {str(e)}", exc_info=True)
+
+async def start_minimax_mcp():
+    """Start MiniMax MCP in a background task"""
+    global service_errors
+    try:
+        logger.info("Starting MiniMax MCP")
+        success = await minimax_service.ensure_mcp_running()
+        if not success:
+            service_errors["minimax"] = "Failed to start MiniMax MCP"
+            logger.error("Failed to start MiniMax MCP")
+    except Exception as e:
+        service_errors["minimax"] = str(e)
+        logger.error(f"Error starting MiniMax MCP: {str(e)}", exc_info=True)
+
 # Application startup event
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting services")
     try:
-        # Initialize services
-        await get_brightdata_service()
-        await get_minimax_service()
-        await get_apify_service()
-        logger.info("All services initialized successfully")
+        # Initialize all services once during startup
+        await initialize_services()
+        logger.info("Service initialization process started")
     except Exception as e:
-        logger.error(f"Error initializing services: {str(e)}", exc_info=True)
-        # Don't raise here to allow the app to start even if services fail
+        logger.error(f"Error during service initialization: {str(e)}", exc_info=True)
 
 # Shutdown hook to clean up services
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Shutting down services")
-    
-    global brightdata_service, minimax_service
     
     # Close Bright Data service
     if brightdata_service:
