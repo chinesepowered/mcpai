@@ -4,6 +4,7 @@ import api from '../services/api';
 
 interface DemoPrompt {
   id: string;
+  title: string;
   text: string;
   imageUrl?: string;
 }
@@ -23,20 +24,38 @@ const DemoVideos: React.FC = () => {
   const demoPrompts: DemoPrompt[] = [
     {
       id: "olympic-dive",
+      title: "Olympic Cat Diving Champion",
       text: "Televised footage of a cat doing an acrobatic dive into a swimming pool at the Olympics, from a 10m high diving board, flips and spins",
       imageUrl: "https://images.unsplash.com/photo-1583524505974-6facd53f4597?q=80&w=600&auto=format&fit=crop"
     },
     {
       id: "diving-board",
+      title: "Cat at Olympic Diving Board",
       text: "An orange cat standing straight at the 5meter high diving board at the Olympic Games, there were several people sitting around watching the event",
       imageUrl: "https://images.unsplash.com/photo-1573865526739-10659fec78a5?q=80&w=600&auto=format&fit=crop"
+    },
+    // Tech / AI themed prompt
+    {
+      id: "ai-future",
+      title: "AI Future Lab Collaboration",
+      text: "A futuristic scene of humanoid robots collaborating with human engineers in a neon-lit lab, cinematic lighting, ultra-realistic",
+      imageUrl: "https://images.unsplash.com/photo-1504384308090-c894fdcc538d?q=80&w=600&auto=format&fit=crop"
+    },
+    // Sports / action prompt
+    {
+      id: "mountain-bike",
+      title: "Epic Mountain Bike Jump",
+      text: "Slow-motion shot of a mountain biker launching off a cliff at sunset, dust and debris flying, GoPro perspective, epic soundtrack",
+      imageUrl: "https://images.unsplash.com/photo-1504439904031-93ded9ce4156?q=80&w=600&auto=format&fit=crop"
     }
   ];
 
   // Track status for each demo prompt
   const [videoStatus, setVideoStatus] = useState<Record<string, VideoStatus>>({
     "olympic-dive": { loading: false },
-    "diving-board": { loading: false }
+    "diving-board": { loading: false },
+    "ai-future": { loading: false },
+    "mountain-bike": { loading: false }
   });
 
   // Generate video for a demo prompt
@@ -132,15 +151,17 @@ const DemoVideos: React.FC = () => {
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="bg-gradient-to-r from-purple-600 to-indigo-700 rounded-lg p-6 mb-8 shadow-lg">
-        <h1 className="text-3xl font-bold text-white mb-2">🎬 Hackathon Demo Videos</h1>
+        <h1 className="text-3xl font-bold text-white mb-2">🎬 Curated Demo Videos</h1>
         <p className="text-white text-lg opacity-90">
-          Generate viral videos instantly with these pre-filled prompts!
-          Perfect for demos when Instagram scraping isn't available.
+          Generate viral videos instantly with these hand-picked prompts that&nbsp;
+          showcase the power of our MiniMax video pipeline. No Instagram content
+          required — just click &amp; create!
         </p>
         <div className="mt-4 bg-white bg-opacity-20 p-3 rounded-md">
           <p className="text-white text-sm">
-            <span className="font-bold">⚡ HACKATHON MODE:</span> These demos use the same real MiniMax API 
-            that powers the main app, but with pre-configured prompts for quick testing.
+            <span className="font-bold">⚡ QUICK DEMO:</span> These prompts run through the <em>exact&nbsp;same</em> MiniMax
+            pipeline as user-generated videos, giving you an immediate taste of the
+            final results.
           </p>
         </div>
       </div>
@@ -149,7 +170,7 @@ const DemoVideos: React.FC = () => {
         {demoPrompts.map(prompt => (
           <div key={prompt.id} className="bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
             <div className="p-6">
-              <h2 className="text-xl font-bold text-gray-800 mb-3">Demo: Olympic Cat</h2>
+              <h2 className="text-xl font-bold text-gray-800 mb-3">{prompt.title}</h2>
               <div className="bg-gray-100 p-4 rounded-md mb-4">
                 <p className="text-gray-800 font-medium">{prompt.text}</p>
               </div>

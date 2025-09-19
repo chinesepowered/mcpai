@@ -232,7 +232,8 @@ const App: React.FC = () => {
                 <div className="space-y-2">
                   <NavItem to="/" icon={<FiHome size={18} />} label="Dashboard" />
                   <NavItem to="/discover" icon={<FiSearch size={18} />} label="Discover Content" />
-                  <NavItem to="/demo" icon={<FiZap size={18} />} label="Demo Videos" />
+                  {/* Quick demo section is a core showcase feature */}
+                  <NavItem to="/demo" icon={<FiZap size={18} />} label="Quick Demos" />
                 </div>
               </nav>
               
@@ -266,7 +267,7 @@ const App: React.FC = () => {
                     }
                   >
                     <FiZap size={20} />
-                    <span className="text-xs mt-1">Demo</span>
+                    <span className="text-xs mt-1">Demos</span>
                   </NavLink>
                 </div>
               </div>
