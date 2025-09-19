@@ -29,6 +29,7 @@ ruff==0.0.285
 # MCP Dependencies
 # Note: MiniMax and Bright Data MCPs are installed via npm/uvx commands
 # as specified in the project documentation
+mcp==1.14.1
 
 # Apify Integration
 apify-client==1.1.1
