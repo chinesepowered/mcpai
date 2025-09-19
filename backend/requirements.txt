@@ -30,7 +30,7 @@ apify-client>=1.1.1
 
 # Utilities
 python-jose>=3.3.0
-pillow==13.1
+pillow==11.3.0
 
 # Process Management
 psutil>=5.9.8

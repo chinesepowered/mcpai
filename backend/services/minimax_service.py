@@ -78,7 +78,11 @@ class MiniMaxService:
         if not self.api_key:
             raise ValueError("MiniMax API key not provided and not found in environment")
         
-        self.api_base_url = api_base_url or os.getenv("MINIMAX_API_BASE_URL", "https://api.minimax.chat")
+        # Official MiniMax API base URL
+        self.api_base_url = api_base_url or os.getenv(
+            "MINIMAX_API_BASE_URL",
+            "https://api.minimax.io",
+        )
         
         # Timeout and retry settings
         self.startup_timeout = 30  # seconds
@@ -137,9 +141,9 @@ class MiniMaxService:
         payload = {
             "model": "MiniMax-Hailuo-02",  # Use the latest video model
             "prompt": request.caption,
-            "prompt_optimizer": True,  # Enable prompt optimization
             "duration": request.duration,
-            "resolution": "720P",  # Standard resolution
+            # 768P is the default / recommended resolution per docs
+            "resolution": "768P",
             "aigc_watermark": False  # No watermark for viral marketing
         }
         
@@ -154,7 +158,7 @@ class MiniMaxService:
                 
                 # Call the video generation API endpoint
                 response = await client.post(
-                    f"{self.api_base_url}/v1/text_to_video",
+                    f"{self.api_base_url}/v1/video_generation",
                     json=payload
                 )
                 
