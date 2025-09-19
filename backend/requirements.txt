@@ -15,7 +15,7 @@ httpx~=0.23.0
 pydantic==2.3.0
 
 # File Operations
-python-multipart==0.0.6
+python-multipart>=0.0.9
 aiofiles==23.2.1
 
 # Testing
@@ -36,7 +36,7 @@ apify-client==1.1.1
 
 # Utilities
 python-jose==3.3.0  # For JWT handling
-pillow==10.0.0      # For image processing
+pillow==13.1        # For image processing
 
 # Process Management
 psutil==5.9.8
