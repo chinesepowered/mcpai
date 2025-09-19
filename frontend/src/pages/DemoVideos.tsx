@@ -69,7 +69,7 @@ const DemoVideos: React.FC = () => {
 
     try {
       // Call API to start video generation
-      const response = await apiService.post('/api/generate-video', {
+      const response = await apiService.generateVideo({
         post_id: `demo-${prompt.id}`,
         caption: prompt.text,
         image_url: prompt.imageUrl || '',
@@ -80,7 +80,7 @@ const DemoVideos: React.FC = () => {
         music_style: 'dramatic'
       });
 
-      const { video_id } = response.data;
+      const { video_id } = response;
 
       // Update status with video ID
       setVideoStatus(prev => ({
@@ -108,8 +108,7 @@ const DemoVideos: React.FC = () => {
   // Poll for video status until complete or error
   const pollVideoStatus = async (promptId: string, videoId: string) => {
     try {
-      const response = await apiService.get(`/api/video-status/${videoId}`);
-      const { status, video_url, thumbnail_url, error } = response.data;
+      const { status, video_url, thumbnail_url, error } = await apiService.getVideoStatus(videoId);
 
       if (status === 'completed' && video_url) {
         // Video is ready
