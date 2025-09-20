@@ -83,7 +83,8 @@ class MiniMaxService:
         # Official MiniMax API base URL
         self.api_base_url = api_base_url or os.getenv(
             "MINIMAX_API_BASE_URL",
-            "https://api.minimax.io",
+            # NOTE: correct host per official documentation
+            "https://api.minimaxi.com",
         )
         
         # Timeout and retry settings
@@ -316,7 +317,9 @@ class MiniMaxService:
                 
                 # Call the video status API endpoint
                 response = await client.get(
-                    f"{self.api_base_url}/v1/video_generation_query",
+                    # Correct endpoint per MiniMax docs:
+                    # GET /v1/query/video_generation?task_id=...
+                    f"{self.api_base_url}/v1/query/video_generation",
                     params={"task_id": task_id}
                 )
                 
