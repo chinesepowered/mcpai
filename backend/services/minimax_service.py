@@ -84,7 +84,11 @@ class MiniMaxService:
         self.api_base_url = api_base_url or os.getenv(
             "MINIMAX_API_BASE_URL",
             # NOTE: correct host per official documentation
-            "https://api.minimaxi.com",
+            # The MiniMax REST API is served from the *.io* domain, not *.com*
+            # Example (from docs):
+            #   POST https://api.minimax.io/v1/video_generation
+            #   GET  https://api.minimax.io/v1/query/video_generation
+            "https://api.minimax.io",
         )
         
         # Timeout and retry settings
