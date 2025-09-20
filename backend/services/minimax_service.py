@@ -1,19 +1,15 @@
 import os
 import logging
 import asyncio
-import signal
 import time
-import psutil
-import tempfile
 import json
+import uuid
+import httpx
+import tempfile
 from pathlib import Path
+from datetime import datetime
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
-
-# Import MCP client libraries
-import mcp
-from mcp.client.session import ClientSession
-from mcp.client.stdio import stdio_client
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -48,14 +44,17 @@ class VideoStatus(BaseModel):
     thumbnail_url: Optional[str] = None
     duration: Optional[int] = None
     error: Optional[str] = None
+    # MiniMax task identifier used for polling status
+    task_id: Optional[str] = None
+    # ISO timestamp when the task was created – used for progress estimation
+    created_at: Optional[str] = None
 
 class MiniMaxService:
-    """Service for interacting with MiniMax MCP to generate viral videos."""
+    """Service for interacting with MiniMax API to generate viral videos."""
     
-    # Class-level lock to prevent concurrent MCP startup attempts
+    # Class-level lock to prevent concurrent API initialization
     _startup_lock = asyncio.Lock()
     _instance = None
-    _pid_file = os.path.join(os.path.expanduser("~"), ".minimax_mcp.pid")
     
     def __new__(cls, *args, **kwargs):
         """Implement singleton pattern to ensure only one service instance exists."""
@@ -66,18 +65,14 @@ class MiniMaxService:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        api_host: Optional[str] = None,
-        mcp_base_path: Optional[str] = None,
-        resource_mode: Optional[str] = None
+        api_base_url: Optional[str] = None
     ):
         """
         Initialize the MiniMax service.
         
         Args:
             api_key: MiniMax API key. If not provided, will be loaded from environment.
-            api_host: MiniMax API host. If not provided, will be loaded from environment.
-            mcp_base_path: MiniMax MCP base path. If not provided, will be loaded from environment.
-            resource_mode: MiniMax API resource mode. If not provided, will be loaded from environment.
+            api_base_url: MiniMax API base URL. If not provided, will use default.
         """
         # Only initialize once (singleton pattern)
         if hasattr(self, 'initialized') and self.initialized:
@@ -87,27 +82,26 @@ class MiniMaxService:
         if not self.api_key:
             raise ValueError("MiniMax API key not provided and not found in environment")
         
-        self.api_host = api_host or os.getenv("MINIMAX_API_HOST", "https://api.minimax.io")
-        self.mcp_base_path = mcp_base_path or os.getenv("MINIMAX_MCP_BASE_PATH", "./")
-        self.resource_mode = resource_mode or os.getenv("MINIMAX_API_RESOURCE_MODE", "url")
-        
-        # MCP process management
-        self.mcp_process = None
-        self.mcp_pid = None
-        self.mcp_client = None
-        self.mcp_session = None
-        # async context manager returned by stdio_client
-        self.mcp_context: Optional[asyncio.AbstractAsyncContextManager] = None
+        # Official MiniMax API base URL
+        self.api_base_url = api_base_url or os.getenv(
+            "MINIMAX_API_BASE_URL",
+            # NOTE: correct host per official documentation
+            # The MiniMax REST API is served from the *.io* domain, not *.com*
+            # Example (from docs):
+            #   POST https://api.minimax.io/v1/video_generation
+            #   GET  https://api.minimax.io/v1/query/video_generation
+            "https://api.minimax.io",
+        )
         
         # Timeout and retry settings
         self.startup_timeout = 30  # seconds
-        self.request_timeout = 300  # seconds for video generation (longer timeout)
+        # Allow up to 10 minutes for long-running video generation jobs
+        self.request_timeout = 600  # seconds
         self.max_retries = 3
         self.retry_delay = 2  # seconds
         
-        # Health check settings
-        self.health_check_interval = 60  # seconds
-        self.last_health_check = 0
+        # HTTP client
+        self.http_client = None
         
         # Video tracking
         self.video_status_cache: Dict[str, VideoStatus] = {}
@@ -116,187 +110,29 @@ class MiniMaxService:
         
         # Mark as initialized
         self.initialized = True
-        
-        # Try to restore existing process if PID file exists
-        self._restore_from_pid_file()
     
-    def _restore_from_pid_file(self):
-        """Attempt to restore MCP process from PID file if it exists."""
-        try:
-            if os.path.exists(self._pid_file):
-                with open(self._pid_file, 'r') as f:
-                    pid = int(f.read().strip())
-                
-                # Check if process is running
-                if self._is_process_running(pid):
-                    logger.info(f"Restored MiniMax MCP process from PID file: {pid}")
-                    self.mcp_pid = pid
-                else:
-                    logger.info(f"Found stale PID file for MiniMax MCP: {pid}")
-                    os.unlink(self._pid_file)
-        except Exception as e:
-            logger.warning(f"Error restoring from PID file: {str(e)}")
-            # Remove potentially corrupted PID file
-            if os.path.exists(self._pid_file):
-                os.unlink(self._pid_file)
-    
-    def _is_process_running(self, pid: int) -> bool:
-        """Check if a process with the given PID is running."""
-        try:
-            process = psutil.Process(pid)
-            # Check if it's actually our MCP process
-            if "minimax" in " ".join(process.cmdline()).lower() or "uvx" in " ".join(process.cmdline()).lower():
-                return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
-            return False
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            return False
-    
-    async def ensure_mcp_running(self) -> bool:
+    async def _get_http_client(self) -> httpx.AsyncClient:
         """
-        Ensure that the MiniMax MCP is running.
-        Uses a lock to prevent concurrent startup attempts.
+        Get or create an HTTP client for API requests.
         
         Returns:
-            bool: True if MCP is running, False otherwise.
+            httpx.AsyncClient: Configured HTTP client
         """
-        # First check if we need to do a health check
-        current_time = time.time()
-        if self.mcp_pid and (current_time - self.last_health_check) > self.health_check_interval:
-            self.last_health_check = current_time
-            
-            # Check if process is still running
-            if not self._is_process_running(self.mcp_pid):
-                logger.warning(f"MiniMax MCP (PID: {self.mcp_pid}) is not running, will restart")
-                self.mcp_pid = None
-                self.mcp_client = None
-                self.mcp_session = None
-                # Clean up PID file
-                if os.path.exists(self._pid_file):
-                    os.unlink(self._pid_file)
-        
-        # If we have a valid PID and client, check if it's responsive
-        if self.mcp_pid and self.mcp_client and self.mcp_session:
-            try:
-                # Ping the MCP server to check if it's responsive
-                await self.mcp_session.ping()
-                return True
-            except Exception as e:
-                logger.warning(f"MiniMax MCP client is not responsive: {str(e)}")
-                self.mcp_pid = None
-                self.mcp_client = None
-                self.mcp_session = None
-        
-        # Acquire lock to prevent concurrent startup attempts
-        async with self._startup_lock:
-            # Double-check if another thread started the process while we were waiting
-            if self.mcp_pid and self.mcp_client and self.mcp_session:
-                return True
-            
-            # Start MCP if not running
-            return await self._start_mcp()
-    
-    async def _start_mcp(self) -> bool:
-        """
-        Start the MiniMax MCP process and connect to it.
-        
-        Returns:
-            bool: True if MCP started successfully, False otherwise.
-        """
-        logger.info("Starting MiniMax MCP")
-        
-        # Kill existing process if it exists
-        await self._cleanup_existing_process()
-        
-        try:
-            # Create stdio server parameters
-            server_params = mcp.StdioServerParameters(
-                command="uvx",
-                args=["minimax-mcp", "-y"],
-                env={
-                    **os.environ,
-                    "MINIMAX_API_KEY": self.api_key,
-                    "MINIMAX_API_HOST": self.api_host,
-                    "MINIMAX_MCP_BASE_PATH": self.mcp_base_path,
-                    "MINIMAX_API_RESOURCE_MODE": self.resource_mode
+        if self.http_client is None or self.http_client.is_closed:
+            # Create a new client with appropriate timeouts
+            self.http_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self.request_timeout),
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
                 }
             )
-            
-            # Create MCP streams and session
-            self.mcp_context = stdio_client(server_params)
-            read_stream, write_stream = await self.mcp_context.__aenter__()
-            self.mcp_session = ClientSession(read_stream, write_stream)
-            
-            # Get the PID of the process using psutil
-            for proc in psutil.process_iter(['pid', 'cmdline']):
-                try:
-                    if proc.info['cmdline'] and "minimax-mcp" in " ".join(proc.info['cmdline']):
-                        self.mcp_pid = proc.info['pid']
-                        break
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    continue
-            
-            if self.mcp_pid:
-                logger.info(f"MiniMax MCP started with PID {self.mcp_pid}")
-                with open(self._pid_file, 'w') as f:
-                    f.write(str(self.mcp_pid))
-            
-            # Initialize the session (MCP client handles the protocol automatically)
-            await self.mcp_session.initialize()
-            
-            # Ping to verify connection
-            await self.mcp_session.ping()
-            
-            logger.info("MiniMax MCP client connected successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to start MiniMax MCP: {str(e)}")
-            # Cleanup on error
-            await self._cleanup_existing_process()
-            if os.path.exists(self._pid_file):
-                os.unlink(self._pid_file)
-            return False
-    
-    async def _cleanup_existing_process(self):
-        """Clean up existing MCP process with proper signal handling."""
-        # Close MCP session and stdio context if they exist
-        if self.mcp_session:
-            self.mcp_session = None
-
-        if self.mcp_context:
-            try:
-                await self.mcp_context.__aexit__(None, None, None)
-            except Exception as e:
-                logger.warning(f"Error exiting MCP stdio context: {str(e)}")
-            self.mcp_context = None
-        
-        # Try to terminate by PID if we have it
-        if self.mcp_pid and self._is_process_running(self.mcp_pid):
-            try:
-                logger.info(f"Terminating MiniMax MCP by PID: {self.mcp_pid}")
-                # Try to kill the process group
-                os.killpg(os.getpgid(self.mcp_pid), signal.SIGTERM)
-                
-                # Wait for process to terminate
-                for _ in range(5):  # Wait up to 5 seconds
-                    if not self._is_process_running(self.mcp_pid):
-                        break
-                    await asyncio.sleep(1)
-                
-                # Force kill if still running
-                if self._is_process_running(self.mcp_pid):
-                    logger.warning(f"Force killing MiniMax MCP by PID: {self.mcp_pid}")
-                    os.killpg(os.getpgid(self.mcp_pid), signal.SIGKILL)
-            except Exception as e:
-                logger.error(f"Error terminating MiniMax MCP by PID: {str(e)}")
-        
-        # Reset process tracking
-        self.mcp_process = None
-        self.mcp_pid = None
+        return self.http_client
     
     async def generate_video(self, request: VideoGenerationRequest) -> VideoGenerationResponse:
         """
-        Generate a viral video based on Instagram post content using MiniMax MCP.
+        Generate a viral video based on Instagram post content using MiniMax API.
         
         Args:
             request: Video generation request parameters
@@ -304,66 +140,81 @@ class MiniMaxService:
         Returns:
             VideoGenerationResponse: Response with video ID and initial status
         """
-        # Ensure MCP is running
-        if not await self.ensure_mcp_running():
-            raise RuntimeError("Failed to start MiniMax MCP")
-        
         logger.info(f"Generating video for post: {request.post_id} with style: {request.style}")
         
-        # Prepare the request payload
+        # Generate a unique video ID
+        video_id = f"video_{request.post_id}_{int(time.time())}"
+        
+        # Prepare the request payload for text-to-video API
+        # Based on MiniMax API documentation
         payload = {
-            "inputs": {
-                "content": {
-                    "post_id": request.post_id,
-                    "caption": request.caption,
-                    "image_url": request.image_url,
-                    "style": request.style,
-                    "duration": request.duration,
-                    "voice_type": request.voice_type,
-                    "include_captions": request.include_captions
-                }
-            },
-            "parameters": {
-                "output_format": "mp4",
-                "resolution": "720p",
-                "max_duration": request.duration,
-                "output_dir": str(self.output_dir)
-            }
+            "model": "MiniMax-Hailuo-02",  # Use the latest video model
+            "prompt": request.caption,
+            # MiniMax video API currently supports only 6 s and 10 s clips.
+            # To keep turnaround fast (better UX for viral content) we default
+            # to 6 seconds regardless of the requested duration.
+            # TODO: expose 6 / 10 s choice to the frontend if needed.
+            "duration": 6,
+            # 768P is the default / recommended resolution per docs
+            "resolution": "768P",
+            "aigc_watermark": False  # No watermark for viral marketing
         }
         
+        # Add music style if provided
         if request.music_style:
-            payload["inputs"]["content"]["music_style"] = request.music_style
+            payload["music_style"] = request.music_style
         
         # Implement retry logic for API requests
         for attempt in range(self.max_retries):
             try:
-                # Call the video generation tool
-                tool_result = await self.mcp_session.call_tool(
-                    mcp.CallToolRequest(
-                        name="generate_video",
-                        arguments=payload
-                    )
+                client = await self._get_http_client()
+                
+                # Call the video generation API endpoint
+                response = await client.post(
+                    f"{self.api_base_url}/v1/video_generation",
+                    json=payload
                 )
                 
-                # Parse the result
-                result_data = json.loads(tool_result.result)
+                # Raise exception for error status codes
+                response.raise_for_status()
                 
-                # Get video ID
-                video_id = result_data.get("video_id", f"video_{request.post_id}")
+                # Parse the response
+                result_data = response.json()
+                # Log full response for debugging – helps diagnose missing task_id issues
+                logger.debug(
+                    "MiniMax video_generation raw response: %s",
+                    json.dumps(result_data, ensure_ascii=False),
+                )
+                
+                # Extract task ID from response
+                task_id = result_data.get("task_id")
+                if not task_id:
+                    # If base_resp is present, include status code/msg for easier debugging
+                    base_resp = result_data.get("base_resp", {})
+                    status_code = base_resp.get("status_code")
+                    status_msg = base_resp.get("status_msg")
+                    logger.error(
+                        "MiniMax API returned no task_id. status_code=%s, status_msg=%s",
+                        status_code,
+                        status_msg,
+                    )
+                    raise ValueError("No task_id in API response")
                 
                 # Create initial response
                 video_response = VideoGenerationResponse(
                     video_id=video_id,
                     status="processing",
                     message="Video generation started",
-                    created_at=result_data.get("created_at")
+                    created_at=datetime.now().isoformat()
                 )
                 
-                # Store status in cache
+                # Store status in cache with mapping from our video_id to MiniMax task_id
                 self.video_status_cache[video_id] = VideoStatus(
                     video_id=video_id,
                     status="processing",
-                    progress=0.0
+                    progress=0.0,
+                    task_id=task_id,
+                    created_at=datetime.now().isoformat()
                 )
                 
                 # Start background task to monitor video generation
@@ -380,11 +231,19 @@ class MiniMaxService:
                     logger.info(f"Retrying in {delay} seconds")
                     await asyncio.sleep(delay)
                     
-                    # Check if MCP is still responsive
-                    if not await self.ensure_mcp_running():
-                        logger.warning("MCP became unresponsive, restarting")
+                    # Create a new client if needed
+                    if self.http_client and not self.http_client.is_closed:
+                        await self.http_client.aclose()
+                        self.http_client = None
                     
                     continue
+                
+                # Create failed status in cache
+                self.video_status_cache[video_id] = VideoStatus(
+                    video_id=video_id,
+                    status="failed",
+                    error=str(e)
+                )
                 
                 raise RuntimeError(f"Error generating video: {str(e)}")
     
@@ -400,7 +259,8 @@ class MiniMaxService:
             await asyncio.sleep(2)
             
             # Check status periodically
-            max_checks = 60  # Maximum number of status checks
+            # 120 × 5 s  ≈ 10 minutes total polling window
+            max_checks = 120  # Maximum number of status checks
             check_interval = 5  # Seconds between checks
             
             for i in range(max_checks):
@@ -409,10 +269,6 @@ class MiniMaxService:
                 # If completed or failed, stop checking
                 if status.status in ["completed", "failed"]:
                     break
-                
-                # Update progress
-                if status.progress is not None:
-                    self.video_status_cache[video_id].progress = status.progress
                 
                 # Wait before next check
                 await asyncio.sleep(check_interval)
@@ -430,7 +286,7 @@ class MiniMaxService:
     
     async def get_video_status(self, video_id: str) -> VideoStatus:
         """
-        Get the status of a video generation task from MiniMax MCP.
+        Get the status of a video generation task from MiniMax API.
         
         Args:
             video_id: ID of the video to check
@@ -445,32 +301,104 @@ class MiniMaxService:
             # If already completed or failed, return cached status
             if cached_status.status in ["completed", "failed"]:
                 return cached_status
-        
-        # Ensure MCP is running
-        if not await self.ensure_mcp_running():
-            raise RuntimeError("Failed to start MiniMax MCP")
+            
+            # Get the MiniMax task_id
+            task_id = getattr(cached_status, "task_id", None)
+            if not task_id:
+                # No task ID found, return error status
+                cached_status.status = "failed"
+                cached_status.error = "No task ID found for video"
+                return cached_status
+        else:
+            # No cached status found
+            return VideoStatus(
+                video_id=video_id,
+                status="failed",
+                error="Video not found"
+            )
         
         # Implement retry logic for API requests
         for attempt in range(self.max_retries):
             try:
-                # Call the video status tool
-                tool_result = await self.mcp_session.call_tool(
-                    mcp.CallToolRequest(
-                        name="video_status",
-                        arguments={"video_id": video_id}
-                    )
+                client = await self._get_http_client()
+                
+                # Call the video status API endpoint
+                response = await client.get(
+                    # Correct endpoint per MiniMax docs:
+                    # GET /v1/query/video_generation?task_id=...
+                    f"{self.api_base_url}/v1/query/video_generation",
+                    params={"task_id": task_id}
                 )
                 
-                # Parse the result
-                result_data = json.loads(tool_result.result)
+                # Raise exception for error status codes
+                response.raise_for_status()
+                
+                # Parse the response
+                result_data = response.json()
+                
+                # Extract base response
+                base_resp = result_data.get("base_resp", {})
+                if base_resp.get("status_code") != 0:
+                    # API returned an error
+                    error_msg = base_resp.get("status_msg", "Unknown API error")
+                    raise ValueError(f"API error: {error_msg}")
                 
                 # Extract status information
-                status = result_data.get("status", "processing")
-                progress = result_data.get("progress", 0.0)
-                video_url = result_data.get("video_url")
-                thumbnail_url = result_data.get("thumbnail_url")
-                duration = result_data.get("duration")
-                error = result_data.get("error")
+                api_status = result_data.get("status", "PROCESSING")
+                file_id = result_data.get("file_id")
+                
+                # Map API status to our status
+                status_map = {
+                    "PROCESSING": "processing",
+                    "Success": "completed",
+                    "SUCCEEDED": "completed",
+                    "FAILED": "failed",
+                    "Fail": "failed"
+                }
+                status = status_map.get(api_status, "processing")
+                
+                # Calculate progress based on API response
+                progress = 0.0
+                if status == "completed":
+                    progress = 1.0
+                elif status == "processing":
+                    # Estimate progress based on elapsed time
+                    # Assuming average job takes 3 minutes
+                    # Parse created_at (ISO 8601) if available, else use current time
+                    try:
+                        if cached_status.created_at:
+                            created_ts = datetime.fromisoformat(cached_status.created_at).timestamp()
+                        else:
+                            created_ts = time.time()
+                    except (ValueError, TypeError):
+                        created_ts = time.time()
+
+                    elapsed = time.time() - created_ts
+                    progress = min(0.95, elapsed / 180)  # Cap at 95% until complete
+                
+                # Get video URL if available
+                video_url = None
+                thumbnail_url = None
+                duration = None
+                error = None
+                
+                if status == "completed" and file_id:
+                    # Retrieve the final file information (download URL)
+                    retrieve_response = await client.get(
+                        f"{self.api_base_url}/v1/files/retrieve",
+                        params={"file_id": file_id}
+                    )
+                    retrieve_response.raise_for_status()
+                    retrieve_data = retrieve_response.json()
+
+                    file_info = retrieve_data.get("file", {})
+                    video_url = file_info.get("download_url")
+                    # Use same url as thumbnail fallback
+                    thumbnail_url = file_info.get("thumbnail_url", video_url)
+                    duration = file_info.get("duration", duration)
+                
+                if status == "failed":
+                    error = result_data.get("error_msg", "Video generation failed")
                 
                 # Create status object
                 video_status = VideoStatus(
@@ -480,7 +408,8 @@ class MiniMaxService:
                     video_url=video_url,
                     thumbnail_url=thumbnail_url,
                     duration=duration,
-                    error=error
+                    error=error,
+                    task_id=task_id
                 )
                 
                 # Update cache
@@ -497,9 +426,10 @@ class MiniMaxService:
                     logger.info(f"Retrying in {delay} seconds")
                     await asyncio.sleep(delay)
                     
-                    # Check if MCP is still responsive
-                    if not await self.ensure_mcp_running():
-                        logger.warning("MCP became unresponsive, restarting")
+                    # Create a new client if needed
+                    if self.http_client and not self.http_client.is_closed:
+                        await self.http_client.aclose()
+                        self.http_client = None
                     
                     continue
                 
@@ -508,6 +438,7 @@ class MiniMaxService:
                     # Don't override status if already completed
                     if self.video_status_cache[video_id].status != "completed":
                         self.video_status_cache[video_id].error = str(e)
+                        self.video_status_cache[video_id].status = "failed"
                 
                 # Return current status from cache or create new failed status
                 return self.video_status_cache.get(
@@ -543,25 +474,8 @@ class MiniMaxService:
         }
     
     async def close(self):
-        """Close the service and terminate the MCP process."""
-        # Close MCP session if it exists
-        if self.mcp_session:
-            self.mcp_session = None
-
-        # Exit stdio context
-        if self.mcp_context:
-            try:
-                await self.mcp_context.__aexit__(None, None, None)
-            except Exception as e:
-                logger.warning(f"Error exiting MCP stdio context: {e}")
-            self.mcp_context = None
-        
-        # Clean up process
-        await self._cleanup_existing_process()
-        
-        # Remove PID file
-        if os.path.exists(self._pid_file):
-            try:
-                os.unlink(self._pid_file)
-            except Exception as e:
-                logger.error(f"Error removing PID file: {str(e)}")
+        """Close the service and clean up resources."""
+        # Close HTTP client if it exists
+        if self.http_client and not self.http_client.is_closed:
+            await self.http_client.aclose()
+            self.http_client = None
