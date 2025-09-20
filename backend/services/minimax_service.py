@@ -46,6 +46,8 @@ class VideoStatus(BaseModel):
     error: Optional[str] = None
     # MiniMax task identifier used for polling status
     task_id: Optional[str] = None
+    # ISO timestamp when the task was created – used for progress estimation
+    created_at: Optional[str] = None
 
 class MiniMaxService:
     """Service for interacting with MiniMax API to generate viral videos."""
@@ -211,7 +213,8 @@ class MiniMaxService:
                     video_id=video_id,
                     status="processing",
                     progress=0.0,
-                    task_id=task_id
+                    task_id=task_id,
+                    created_at=datetime.now().isoformat()
                 )
                 
                 # Start background task to monitor video generation
@@ -358,7 +361,16 @@ class MiniMaxService:
                 elif status == "processing":
                     # Estimate progress based on elapsed time
                     # Assuming average job takes 3 minutes
-                    elapsed = time.time() - int(cached_status.created_at or time.time())
+                    # Parse created_at (ISO 8601) if available, else use current time
+                    try:
+                        if cached_status.created_at:
+                            created_ts = datetime.fromisoformat(cached_status.created_at).timestamp()
+                        else:
+                            created_ts = time.time()
+                    except (ValueError, TypeError):
+                        created_ts = time.time()
+
+                    elapsed = time.time() - created_ts
                     progress = min(0.95, elapsed / 180)  # Cap at 95% until complete
                 
                 # Get video URL if available
