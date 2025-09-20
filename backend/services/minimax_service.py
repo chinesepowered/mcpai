@@ -345,12 +345,15 @@ class MiniMaxService:
                 
                 # Extract status information
                 api_status = result_data.get("status", "PROCESSING")
+                file_id = result_data.get("file_id")
                 
                 # Map API status to our status
                 status_map = {
                     "PROCESSING": "processing",
+                    "Success": "completed",
                     "SUCCEEDED": "completed",
-                    "FAILED": "failed"
+                    "FAILED": "failed",
+                    "Fail": "failed"
                 }
                 status = status_map.get(api_status, "processing")
                 
@@ -379,18 +382,20 @@ class MiniMaxService:
                 duration = None
                 error = None
                 
-                if status == "completed":
-                    # Get download URL
-                    download_response = await client.get(
-                        f"{self.api_base_url}/v1/video_generation_download",
-                        params={"task_id": task_id}
+                if status == "completed" and file_id:
+                    # Retrieve the final file information (download URL)
+                    retrieve_response = await client.get(
+                        f"{self.api_base_url}/v1/files/retrieve",
+                        params={"file_id": file_id}
                     )
-                    download_response.raise_for_status()
-                    download_data = download_response.json()
-                    
-                    video_url = download_data.get("url")
-                    thumbnail_url = download_data.get("thumbnail_url", video_url)
-                    duration = request.duration if "request" in locals() else None
+                    retrieve_response.raise_for_status()
+                    retrieve_data = retrieve_response.json()
+
+                    file_info = retrieve_data.get("file", {})
+                    video_url = file_info.get("download_url")
+                    # Use same url as thumbnail fallback
+                    thumbnail_url = file_info.get("thumbnail_url", video_url)
+                    duration = file_info.get("duration", duration)
                 
                 if status == "failed":
                     error = result_data.get("error_msg", "Video generation failed")
