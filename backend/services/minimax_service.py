@@ -44,6 +44,8 @@ class VideoStatus(BaseModel):
     thumbnail_url: Optional[str] = None
     duration: Optional[int] = None
     error: Optional[str] = None
+    # MiniMax task identifier used for polling status
+    task_id: Optional[str] = None
 
 class MiniMaxService:
     """Service for interacting with MiniMax API to generate viral videos."""
@@ -203,11 +205,9 @@ class MiniMaxService:
                 self.video_status_cache[video_id] = VideoStatus(
                     video_id=video_id,
                     status="processing",
-                    progress=0.0
+                    progress=0.0,
+                    task_id=task_id
                 )
-                
-                # Store task_id mapping
-                self.video_status_cache[video_id].task_id = task_id
                 
                 # Start background task to monitor video generation
                 asyncio.create_task(self._monitor_video_generation(video_id))
@@ -384,11 +384,9 @@ class MiniMaxService:
                     video_url=video_url,
                     thumbnail_url=thumbnail_url,
                     duration=duration,
-                    error=error
+                    error=error,
+                    task_id=task_id
                 )
-                
-                # Store task_id for future queries
-                video_status.task_id = task_id
                 
                 # Update cache
                 self.video_status_cache[video_id] = video_status
