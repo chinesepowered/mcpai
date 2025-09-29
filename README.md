@@ -1,7 +1,7 @@
 # Viral Marketing Agent
 
 Minimax 2025 Hackathon Winner
-[https://github.com/minimax-ai/Minimax-hackathon](Minimax Hackathon Winner)
+[Minimax Hackathon Winner](https://github.com/minimax-ai/Minimax-hackathon)
 
 AI-powered system that discovers trending Instagram content and instantly generates satirical, share-worthy videos.
 
